@@ -1,0 +1,43 @@
+# Create the namespace, runtime-credential Secret and CA ConfigMap as described
+# in setup.md before applying this manifest. Use a dedicated k8s/homelab/* agent.
+apiVersion: external-secrets.io/v1
+kind: SecretStore
+metadata:
+  name: ssm
+  namespace: apps
+spec:
+  provider:
+    webhook:
+      url: 'https://ssm.home.arpa:8443/api/v1/secrets/{{ .remoteRef.key }}'
+      method: GET
+      timeout: 10s
+      headers:
+        Authorization: 'Bearer {{ .auth.token }}'
+      secrets:
+        - name: auth
+          secretRef:
+            name: ssm-runtime-credential
+      caProvider:
+        type: ConfigMap
+        name: ssm-ca
+        key: ca.crt
+      result:
+        jsonPath: '$.data.value'
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: application-password
+  namespace: apps
+spec:
+  refreshInterval: 1m
+  secretStoreRef:
+    name: ssm
+    kind: SecretStore
+  target:
+    name: application-password
+    deletionPolicy: Retain
+  data:
+    - secretKey: password
+      remoteRef:
+        key: k8s/homelab/application-password

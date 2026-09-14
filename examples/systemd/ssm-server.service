@@ -1,0 +1,31 @@
+[Unit]
+Description=SimpleSecretsManager server
+Documentation=file:/usr/local/share/doc/ssm/setup.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ssm-server
+Group=ssm-server
+ExecStart=/usr/local/bin/ssm-server -config /etc/ssm-server/config.yaml
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+StateDirectory=ssm-server
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/ssm-server
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ssm-server
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

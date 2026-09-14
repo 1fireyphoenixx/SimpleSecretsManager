@@ -1,0 +1,11 @@
+# Install as /etc/ssm-agent/config.yaml, root:root, mode 0600.
+server: https://ssm.home.arpa:8443
+ca_file: /etc/ssm-agent/ca.crt
+# Supply the one-time token generated in the WebUI. After first enrollment,
+# remove it here; the agent uses /var/lib/ssm-agent/credentials.json instead.
+enrollment_token: REPLACE_WITH_ONE_TIME_TOKEN
+poll_interval: 30s
+state_dir: /var/lib/ssm-agent
+templates_dir: /etc/ssm-agent/templates
+secrets_dir: /etc/ssm-agent/secrets
+log_level: info

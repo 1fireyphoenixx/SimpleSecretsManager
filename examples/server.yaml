@@ -1,0 +1,11 @@
+# Install as /etc/ssm-server/config.yaml, owned by ssm-server, mode 0600.
+listen: ":8443"
+storage: sqlite
+dsn: /var/lib/ssm-server/ssm.db
+# For MySQL use storage: mysql and a Go MySQL driver DSN, e.g.:
+# dsn: 'ssm:CHANGE_ME@tcp(db.home.arpa:3306)/ssm?tls=true&timeout=10s'
+# The DSN password is a database credential; restrict this configuration file.
+tls_cert: /etc/ssm-server/tls/server.crt
+tls_key: /etc/ssm-server/tls/server.key
+session_ttl: 8h
+log_level: info

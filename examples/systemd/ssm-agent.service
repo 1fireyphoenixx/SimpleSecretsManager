@@ -1,0 +1,27 @@
+[Unit]
+Description=SimpleSecretsManager agent
+Documentation=file:/usr/local/share/doc/ssm/setup.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# Root permits changing destination owners and restarting local services.
+# Restrict configuration to root: local hook commands execute with this identity.
+User=root
+Group=root
+ExecStart=/usr/local/bin/ssm-agent -config /etc/ssm-agent/config.yaml
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+StateDirectory=ssm-agent
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target
