@@ -127,7 +127,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Strict-Transport-Security", "max-age=31536000")
-	if r.URL.Path == "/" || r.URL.Path == "/app.js" || r.URL.Path == "/style.css" {
+	if r.URL.Path == "/" || r.URL.Path == "/app.js" || r.URL.Path == "/style.css" || r.URL.Path == "/browse.js" || r.URL.Path == "/audit" || r.URL.Path == "/audit.js" {
 		s.ui(w, r)
 		return
 	}

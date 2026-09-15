@@ -3,4 +3,4 @@ package version
 
 // Version is replaced by the release build using -ldflags. Keep the fallback
 // useful for developers who run go build directly instead of using the Makefile.
-var Version = "0.0.3"
+var Version = "0.0.4"

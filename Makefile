@@ -3,7 +3,7 @@ VERSION := $(shell cat VERSION)
 GO ?= go
 LDFLAGS := -s -w -X simplesecretsmanager/internal/version.Version=$(VERSION)
 
-.PHONY: all build test test-mysql check clean release
+.PHONY: all build test test-ui test-mysql check clean release
 all: build
 build:
 	mkdir -p bin
@@ -12,6 +12,10 @@ build:
 
 test:
 	$(GO) test -race ./...
+
+# Browser projection tests use Node.js built-in test runner; no npm install.
+test-ui:
+	node --test tests/*.test.cjs
 
 test-mysql:
 	@test -n "$$MYSQL_TEST_DSN" || (echo 'MYSQL_TEST_DSN must name a disposable MySQL database'; exit 1)

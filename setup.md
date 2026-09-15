@@ -1,6 +1,6 @@
 # Installing and operating SimpleSecretsManager
 
-This guide installs SSM **0.0.3** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
+This guide installs SSM **0.0.4** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
 
 The normal sequence is: install binaries, configure TLS, initialize the database once, start the locked server, sign in and unlock, create secrets and an agent identity, then enroll the agent. The service units in `examples/systemd/` require no edits when these paths are used.
 
@@ -18,7 +18,7 @@ ssm-server -v
 ssm-agent -v
 ```
 
-Both commands must print `0.0.3`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
+Both commands must print `0.0.4`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
 
 Create a dedicated server account and private directories:
 
@@ -113,7 +113,7 @@ sudo systemctl enable --now ssm-server
 sudo journalctl -u ssm-server -n 30 --no-pager
 ```
 
-Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM v0.0.3** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
+Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM v0.0.4** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
 
 For CLI unlock, create mode-0600 temporary password/master files as in the previous step, then run:
 
@@ -137,7 +137,9 @@ In **Secrets**, create these example paths:
 - `servers/web01/database-password`
 - `servers/web01/api-token`
 
-Paths are case-sensitive, relative names separated by `/`. Leading/trailing slashes, empty components, `.`/`..`, backslashes, percent signs, control characters, and wildcards in secret names are rejected. The WebUI lists path, revision, creation time, and update time. It retrieves values only when you choose **Reveal** or **Copy**. Close the reveal dialog to clear the displayed value.
+Paths are case-sensitive, relative names separated by `/`. Leading/trailing slashes, empty components, `.`/`..`, backslashes, percent signs, control characters, and wildcards in secret names are rejected. The WebUI groups path prefixes into folders and displays secrets as files, with revision and update time. Use the breadcrumbs to move between folders and the filter to find direct children. A name can be both a secret and a folder when other secrets exist below that path. Folders are derived from paths; empty folders are not stored.
+
+Choose **Create secret** to open a large editor prefilled with the current folder, or click a secret / **Edit** to replace it. The editor has a large resizable text area for certificates, private keys, and configuration. Existing values are not fetched automatically: choose **Reveal current value into editor** to load one explicitly. **Reveal** and **Copy** on a file are also explicit actions. Cancel, Escape, or closing the dialog clears the editor; failed saves keep your input so you can retry. Creation timestamps remain available through the metadata API.
 
 In **Agents & permissions**, create an agent named `web01` with this permission:
 
@@ -405,7 +407,7 @@ curl --fail --cacert /path/to/lab-ca.crt https://ssm.home.arpa:8443/api/v1/ready
 
 Health is available locked; readiness returns 503 locked. Neither exposes secret names, database credentials, or encryption material. An uninitialized database also remains unready until setup and unlock.
 
-Server and agent logs use structured JSON with configurable levels. Audit records in the database capture timestamps, identity, operation, success/failure, secret path where relevant, and the direct peer source address. The server deliberately ignores forwarded source headers; behind a proxy, the source is the proxy. Audit access uses **Server & audit → Load audit records** or `/api/v1/admin/audit`. Request bodies, plaintext bearer credentials, and secret values are excluded. Audit records are not tamper-proof against someone with database write access; export/retain database backups accordingly. Listings and audit retrieval are unpaginated in 0.0.3, so monitor database growth; there is no automatic retention cleanup.
+Server and agent logs use structured JSON with configurable levels. Audit records in the database capture timestamps, identity, operation, success/failure, secret path where relevant, and the direct peer source address. The server deliberately ignores forwarded source headers; behind a proxy, the source is the proxy. Audit access uses **Server & audit → View audit log** (opens a separate window with newest-first events and expandable raw JSON) or `/api/v1/admin/audit`. Request bodies, plaintext bearer credentials, and secret values are excluded. Audit records are not tamper-proof against someone with database write access; export/retain database backups accordingly. Listings and audit retrieval are unpaginated in 0.0.4, so monitor database growth; there is no automatic retention cleanup.
 
 For a simple consistent SQLite backup, stop SSM, copy its entire state directory, then restart and unlock:
 
@@ -425,6 +427,7 @@ To upgrade, back up first, stop the service, replace its binary, and restart. Mi
 
 ```sh
 make check
+make test-ui # Node.js 18+; no npm dependencies
 make release
 ```
 
