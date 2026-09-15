@@ -265,6 +265,13 @@ func (s *Server) route(t storage.Tx, r *http.Request, identity, path *string) (a
 			return fail(e)
 		}
 		*identity = "admin:" + session.Admin
+		if p == "/api/v1/admin/write-credentials" || strings.HasPrefix(p, "/api/v1/admin/write-credentials/") {
+			value, e := manageWriteCredentials(t, r)
+			if e != nil {
+				return fail(e)
+			}
+			return ok(value)
+		}
 		switch p {
 		case "/api/v1/admin/session":
 			if r.Method == "GET" {
@@ -553,6 +560,13 @@ func (s *Server) route(t storage.Tx, r *http.Request, identity, path *string) (a
 			return ok(v)
 		}
 		return fail(&apiError{405, "unknown route or method"})
+	}
+	if strings.HasPrefix(p, "/api/v1/write/") {
+		value, e := s.writeSecret(t, r, identity, path)
+		if e != nil {
+			return fail(e)
+		}
+		return ok(value)
 	}
 	metadata := strings.HasPrefix(p, "/api/v1/metadata/")
 	if metadata || strings.HasPrefix(p, "/api/v1/secrets/") {

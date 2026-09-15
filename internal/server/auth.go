@@ -54,3 +54,23 @@ func authenticateAgent(t storage.Tx, r *http.Request) (Agent, error) {
 	}
 	return a, nil
 }
+
+// authenticateWriter verifies only the dedicated writer token namespace. Agent
+// tokens and administrator cookies cannot stand in for a write credential.
+// Path authorization remains a separate check in the write endpoint.
+func authenticateWriter(t storage.Tx, r *http.Request) (WriteCredential, error) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token == "" || token == r.Header.Get("Authorization") {
+		return WriteCredential{}, errUnauth
+	}
+	hash := security.Hash(token)
+	var index struct{ ID string }
+	if t.Get("writer_tokens", hash, &index) != nil {
+		return WriteCredential{}, errUnauth
+	}
+	var c WriteCredential
+	if t.Get("writers", index.ID, &c) != nil || c.Revoked || subtle.ConstantTimeCompare([]byte(c.Hash), []byte(hash)) != 1 {
+		return WriteCredential{}, errUnauth
+	}
+	return c, nil
+}

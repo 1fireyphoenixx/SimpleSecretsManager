@@ -334,12 +334,14 @@ func TestAgentServerSynchronization(t *testing.T) {
 	}
 	assertFile(dest, "value=first")
 	f.unlock()
-	// Run the real polling loop and verify that an API update reaches both files.
+	// Run the real polling loop and verify that a scoped writer update reaches
+	// both files, including the template and the local post-change hook.
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
 	defer func() { cancel(); <-done }()
-	f.request("admin/secrets/servers/web01/password", "PUT", map[string]string{"value": "second"}, "", 200)
+	writer := f.request("admin/write-credentials", "POST", map[string]any{"name": "automation", "paths": []string{"servers/web01/password"}}, "", 200)
+	f.request("write/servers/web01/password", "POST", map[string]string{"value": "second"}, writer["token"].(string), 200)
 	deadline := time.Now().Add(6 * time.Second)
 	for {
 		b, _ := os.ReadFile(hook)
@@ -400,7 +402,7 @@ func TestTLSOriginAndVisibleVersion(t *testing.T) {
 	}
 	b, _ := io.ReadAll(r.Body)
 	r.Body.Close()
-	if !bytes.Contains(b, []byte("SSM v0.0.1")) || !bytes.Contains(b, []byte("<header>")) {
+	if !bytes.Contains(b, []byte("SSM v0.0.2")) || !bytes.Contains(b, []byte("<header>")) {
 		t.Fatal("persistent version missing")
 	}
 	req, _ = http.NewRequest("POST", f.http.URL+"/api/v1/login", strings.NewReader("{}"))

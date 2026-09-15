@@ -1,6 +1,6 @@
 # Installing and operating SimpleSecretsManager
 
-This guide installs SSM **0.0.1** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
+This guide installs SSM **0.0.2** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
 
 The normal sequence is: install binaries, configure TLS, initialize the database once, start the locked server, sign in and unlock, create secrets and an agent identity, then enroll the agent. The service units in `examples/systemd/` require no edits when these paths are used.
 
@@ -18,7 +18,7 @@ ssm-server -v
 ssm-agent -v
 ```
 
-Both commands must print `0.0.1`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
+Both commands must print `0.0.2`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
 
 Create a dedicated server account and private directories:
 
@@ -113,7 +113,7 @@ sudo systemctl enable --now ssm-server
 sudo journalctl -u ssm-server -n 30 --no-pager
 ```
 
-Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM v0.0.1** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
+Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM v0.0.2** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
 
 For CLI unlock, create mode-0600 temporary password/master files as in the previous step, then run:
 
@@ -145,9 +145,65 @@ In **Agents & permissions**, create an agent named `web01` with this permission:
 servers/web01/*
 ```
 
-Permissions are default-deny. An exact rule grants that one secret; a terminal `/*` grants descendants, including deeper paths. `servers/web01/*` does not grant `servers/web010/password` or the parent `servers/web01`. Agents have read-only access; administrative writes require an administrator session.
+Permissions are default-deny. An exact rule grants that one secret; a terminal `/*` grants descendants, including deeper paths. `servers/web01/*` does not grant `servers/web010/password` or the parent `servers/web01`. Agents have read-only access. Administrators can also issue separate write credentials for scoped automated updates, as described below.
 
 In **Enrollment tokens**, select the new agent and generate a token. Expiry is configurable from 1 to 86,400 seconds. Copy it immediately; the plaintext is shown only in the creation response. A token is consumed by successful enrollment. Only one runtime credential can enroll an identity; other outstanding tokens for that identity stop working afterward. You can delete unused tokens.
+
+### Scoped write credentials and curl updates
+
+In **Write credentials**, choose a name such as `certbot-example.com`, enter the
+paths it may update (one per line), and select **Create write credential**. Exact
+paths and terminal `/*` subtree rules work just like agent permissions. Copy the
+token immediately; it is displayed only once. Use **Edit paths** to change its
+scope or **Revoke** to permanently disable it. An empty path list denies all
+updates. These credentials remain valid until revoked.
+
+Create the target secret through the WebUI first. A write credential can only
+update existing secrets: it cannot read their values, create or delete secrets,
+enroll agents, unlock SSM, or access administrative endpoints. The server must
+be unlocked for an update to succeed. Agent bearer tokens remain read-only.
+
+A simple HTTPS POST updates the value (replace the placeholders):
+
+```sh
+curl --fail --silent --show-error \
+  --cacert /path/to/lab-ca.crt \
+  -H 'Authorization: Bearer YOUR_WRITE_TOKEN' \
+  -H 'Content-Type: application/json' \
+  --data-binary '{"value":"NEW_SECRET_VALUE"}' \
+  https://ssm.home.arpa:8443/api/v1/write/certificates/example.com/fullchain
+```
+
+`--data-binary` makes this a POST. No administrator login, cookie, or CSRF token
+is needed. The response contains the path, revision, timestamps, and encryption
+algorithm, never the value. Repeating an identical value leaves its revision
+unchanged. An out-of-scope path returns 403, a missing/deleted secret returns 404,
+a revoked/invalid credential returns 401, and a locked server returns 503.
+
+For an unattended hook, keep the token out of command-line arguments and shell
+history: put `Authorization: Bearer YOUR_WRITE_TOKEN` in a root-owned mode-0600
+file such as `/etc/ssm-writer/authorization.header`. For a PEM certificate, use
+`jq --rawfile` to encode newlines correctly instead of interpolating it into JSON:
+
+```sh
+jq -n --rawfile value "$RENEWED_LINEAGE/fullchain.pem" '{value: $value}' |
+  curl --fail --silent --show-error \
+    --cacert /path/to/lab-ca.crt \
+    --header @/etc/ssm-writer/authorization.header \
+    -H 'Content-Type: application/json' \
+    --data-binary @- \
+    https://ssm.home.arpa:8443/api/v1/write/certificates/example.com/fullchain
+```
+
+The file example requires `jq`; `RENEWED_LINEAGE` is supplied by the deploy-hook
+caller. Grant only the paths that hook needs. Separate updates are not an atomic
+certificate/key pair; deploy a single combined secret when your application
+supports it, or coordinate the receiving application's reload after both files
+are ready. Writer identities, permission changes, revocations, and successful or
+failed updates are audited without plaintext tokens or values.
+
+Upgrading from 0.0.1 preserves existing secrets and agents. Write credentials use
+new record kinds in the existing storage schema, so no SQL migration is needed.
 
 ## 6. Install and enroll the agent
 
@@ -294,6 +350,7 @@ All JSON endpoints begin with `/api/v1/`. Successful operations currently return
 | POST | `/login` | `{name,password}`; secure session cookie and CSRF token |
 | POST | `/enroll` | `{token}`; consumes one-time token, returns `{id,token}` |
 | GET | `/metadata/<path>` | Agent bearer; path, revision, timestamps, algorithm |
+| POST | `/write/<path>` | Dedicated write bearer; update existing secret with `{value}` |
 | GET | `/secrets/<path>` | Agent bearer; scoped secret value |
 | GET | `/admin/session` | Administrator; session information and CSRF token |
 | POST | `/admin/logout` | Administrator + CSRF; invalidate session |
@@ -303,6 +360,8 @@ All JSON endpoints begin with `/api/v1/`. Successful operations currently return
 | POST | `/admin/master` | Administrator + CSRF; `{old,new}` master keys |
 | GET | `/admin/secrets` | Administrator; metadata-only listing, even locked |
 | GET / POST / PUT / DELETE | `/admin/secrets/<path>` | Administrator; read/create/update/delete; writes use `{value}` |
+| GET / POST | `/admin/write-credentials` | Administrator; list or create `{name,paths:[...]}`, returning a token once |
+| PUT / DELETE | `/admin/write-credentials/<id>` | Administrator; replace `{paths:[...]}` or permanently revoke |
 | GET / POST | `/admin/agents` | Administrator; list or create `{name,paths:[...]}` |
 | PUT / DELETE | `/admin/agents/<id>` | Administrator; replace `{paths:[...]}` or revoke |
 | GET / POST | `/admin/enrollment` | Administrator; list or create `{agent_id,ttl_seconds}` |
@@ -338,7 +397,7 @@ curl --fail --cacert /path/to/lab-ca.crt https://ssm.home.arpa:8443/api/v1/ready
 
 Health is available locked; readiness returns 503 locked. Neither exposes secret names, database credentials, or encryption material. An uninitialized database also remains unready until setup and unlock.
 
-Server and agent logs use structured JSON with configurable levels. Audit records in the database capture timestamps, identity, operation, success/failure, secret path where relevant, and the direct peer source address. The server deliberately ignores forwarded source headers; behind a proxy, the source is the proxy. Audit access uses **Server & audit → Load audit records** or `/api/v1/admin/audit`. Request bodies, plaintext bearer credentials, and secret values are excluded. Audit records are not tamper-proof against someone with database write access; export/retain database backups accordingly. Listings and audit retrieval are unpaginated in 0.0.1, so monitor database growth; there is no automatic retention cleanup.
+Server and agent logs use structured JSON with configurable levels. Audit records in the database capture timestamps, identity, operation, success/failure, secret path where relevant, and the direct peer source address. The server deliberately ignores forwarded source headers; behind a proxy, the source is the proxy. Audit access uses **Server & audit → Load audit records** or `/api/v1/admin/audit`. Request bodies, plaintext bearer credentials, and secret values are excluded. Audit records are not tamper-proof against someone with database write access; export/retain database backups accordingly. Listings and audit retrieval are unpaginated in 0.0.2, so monitor database growth; there is no automatic retention cleanup.
 
 For a simple consistent SQLite backup, stop SSM, copy its entire state directory, then restart and unlock:
 
@@ -367,11 +426,11 @@ To exercise MySQL too, use a disposable local container:
 
 ```sh
 docker run --detach --rm --name ssm-mysql-test \
-  --publish 127.0.0.1:33316:3306 \
+  --publish 127.0.0.2:33316:3306 \
   --env MYSQL_ROOT_PASSWORD=ssm-test-only-password \
   --env MYSQL_DATABASE=ssm_test mysql:8.4
 # Wait until the database reports it is ready before running tests.
-MYSQL_TEST_DSN='root:ssm-test-only-password@tcp(127.0.0.1:33316)/ssm_test?timeout=5s' make test-mysql
+MYSQL_TEST_DSN='root:ssm-test-only-password@tcp(127.0.0.2:33316)/ssm_test?timeout=5s' make test-mysql
 docker stop ssm-mysql-test
 ```
 
