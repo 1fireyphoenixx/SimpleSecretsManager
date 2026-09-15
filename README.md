@@ -1,13 +1,13 @@
 # SimpleSecretsManager (SSM)
 
-**Version 0.0.2** — a small, self-hosted secrets service for Linux homelabs, written in Go.
+**Version 0.0.3** — a small, self-hosted secrets service for Linux homelabs, written in Go.
 
 SSM provides the everyday workflow of storing encrypted secrets centrally and delivering them to machines or Kubernetes. It includes `ssm-server`, an embedded administrative WebUI, and `ssm-agent`. The WebUI keeps the installed version and server lock status in its persistent header.
 
 ## What it does
 
 - Manage secret values and revision metadata through the WebUI or `/api/v1/` API. Browsing never fetches values; use **Reveal** or **Copy** explicitly.
-- Issue dedicated write credentials for automation, restrict which existing secrets they can update, and revoke access in the WebUI. Updates use a simple bearer-authenticated POST.
+- Issue dedicated write credentials for automation, restrict which secrets they can update, optionally allow creation of missing secrets, and revoke access in the WebUI. Updates use a simple bearer-authenticated POST.
 - Create agents, grant exact-path or subtree permissions, issue expiring one-time enrollment tokens, and revoke runtime credentials.
 - Encrypt values with AES-256-GCM and a random data-encryption key. A separate master key protects that key through envelope encryption. Restarting always locks the server.
 - Store records in SQLite or MySQL with tracked, automatic schema migrations.
@@ -35,7 +35,7 @@ make release
 SQLite, encryption, authentication, permissions, file publication, enrollment, and HTTPS agent/server integration tests run by default. Real MySQL tests are opt-in and **require a disposable database**:
 
 ```sh
-MYSQL_TEST_DSN='ssm_test:password@tcp(127.0.0.2:3306)/ssm_test' make test-mysql
+MYSQL_TEST_DSN='ssm_test:password@tcp(127.0.0.1:3306)/ssm_test' make test-mysql
 ```
 
 MySQL tests remove SSM records in that database. Do not point them at an installation you want to keep. See setup.md for an isolated Docker test command.
@@ -53,7 +53,7 @@ MySQL tests remove SSM records in that database. Do not point them at an install
 
 ## Scope and operational boundaries
 
-SSM 0.0.2 implements a static secret store and delivery agent. It does not implement Vault's dynamic database credentials, leases, PKI engine, Shamir unseal, or HA coordination. Run one server instance per database; transactions protect record consistency, but each process has its own in-memory lock state.
+SSM 0.0.3 implements a static secret store and delivery agent. It does not implement Vault's dynamic database credentials, leases, PKI engine, Shamir unseal, or HA coordination. Run one server instance per database; transactions protect record consistency, but each process has its own in-memory lock state.
 
 The master key is your recovery material: losing it makes the encrypted secrets unrecoverable. Keep it outside the server. Metadata, permission rules, and audit records are not encrypted; secret values are. A privileged attacker controlling an unlocked process can access its in-memory data. Disable core dumps and use encrypted swap or disable swap on secret-bearing hosts. Go cannot guarantee removal of every transient copy of a secret from memory.
 

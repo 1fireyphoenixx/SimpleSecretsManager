@@ -181,3 +181,70 @@ func TestWriterCredentialPersistence(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// The existing POST is an upsert only when the administrator explicitly grants
+// creation. The request body cannot grant itself additional privileges.
+func TestWriterOptionalCreation(t *testing.T) {
+	f := newFixture(t, "sqlite", filepath.Join(t.TempDir(), "creation.db"))
+	f.login()
+	f.unlock()
+	created := f.request("admin/write-credentials", "POST", map[string]any{"name": "creator", "paths": []string{"certs/site/*"}, "allow_create": true}, "", 200)
+	token := created["token"].(string)
+	id := created["credential"].(map[string]any)["id"].(string)
+	if created["credential"].(map[string]any)["allow_create"] != true {
+		t.Fatal("creation permission missing")
+	}
+	// Check the cookie-free curl flow as well as denied paths and invalid bodies.
+	jar := f.client.Jar
+	f.client.Jar = nil
+	f.request("write/certs/site2/new", "POST", map[string]string{"value": "first"}, token, 403)
+	f.request("write/certs/site/new", "POST", map[string]any{"value": "first", "allow_create": true}, token, 400)
+	first := f.request("write/certs/site/new", "POST", map[string]string{"value": "first"}, token, 200)
+	if first["revision"] != float64(1) || first["data"] != nil || first["ciphertext"] != nil {
+		t.Fatal("unsafe creation response")
+	}
+	same := f.request("write/certs/site/new", "POST", map[string]string{"value": "first"}, token, 200)
+	if same["revision"] != float64(1) {
+		t.Fatal("identical POST is not idempotent")
+	}
+	changed := f.request("write/certs/site/new", "POST", map[string]string{"value": "second"}, token, 200)
+	if changed["revision"] != float64(2) {
+		t.Fatal("existing secret was not updated")
+	}
+	f.request("secrets/certs/site/new", "GET", nil, token, 401)
+	f.request("write/certs/site/new", "DELETE", nil, token, 405)
+	f.app.Vault.Lock()
+	f.request("write/certs/site/locked", "POST", map[string]string{"value": "first"}, token, 503)
+	f.client.Jar = jar
+	f.unlock()
+	f.request("admin/secrets/certs/site/locked", "GET", nil, "", 404)
+	f.request("admin/secrets/certs/site/new", "DELETE", nil, "", 200)
+	recreated := f.request("write/certs/site/new", "POST", map[string]string{"value": "third"}, token, 200)
+	if recreated["revision"] != float64(3) {
+		t.Fatal("recreation lost revision history")
+	}
+	// Omitted permissions survive edits, and toggling creation preserves paths.
+	edit := f.request("admin/write-credentials/"+id, "PUT", map[string]any{"paths": []string{"certs/site/*"}}, "", 200)
+	if edit["allow_create"] != true {
+		t.Fatal("path edit cleared creation permission")
+	}
+	f.request("admin/write-credentials/"+id, "PUT", map[string]any{"allow_create": false}, "", 200)
+	f.request("write/certs/site/missing", "POST", map[string]string{"value": "value"}, token, 404)
+	f.request("write/certs/site/new", "POST", map[string]string{"value": "fourth"}, token, 200)
+	f.request("admin/write-credentials/"+id, "PUT", map[string]any{"allow_create": true}, "", 200)
+	f.request("write/certs/site/missing", "POST", map[string]string{"value": "value"}, token, 200)
+	f.request("admin/write-credentials/"+id, "PUT", map[string]any{"paths": []string{}}, "", 200)
+	f.request("write/certs/site/denied", "POST", map[string]string{"value": "value"}, token, 403)
+	f.request("admin/write-credentials/"+id, "DELETE", nil, "", 200)
+	f.request("write/certs/site/revoked", "POST", map[string]string{"value": "value"}, token, 401)
+}
+
+func TestLegacyWriterDefaultsToUpdateOnly(t *testing.T) {
+	var legacy WriteCredential
+	if err := json.Unmarshal([]byte(`{"id":"old","paths":["a/*"]}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.AllowCreate {
+		t.Fatal("legacy record gained creation permission")
+	}
+}

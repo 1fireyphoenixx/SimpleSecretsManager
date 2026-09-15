@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -10,17 +11,20 @@ import (
 	"simplesecretsmanager/internal/storage"
 )
 
-// WriteCredential is independent of an agent identity. It grants updates only:
-// possessing it never permits reading values, creating secrets, or using the UI.
+// WriteCredential is independent of an agent identity. It grants updates and,
+// when explicitly enabled, creation at its allowed paths. It never grants reads
+// or administrative access. Older stored records omit AllowCreate and therefore
+// decode to false, keeping existing credentials update-only.
 // Hash is persisted but removed from every administrative response. The random
 // plaintext token is returned exactly once, in the creation response.
 type WriteCredential struct {
-	ID      string    `json:"id"`
-	Name    string    `json:"name"`
-	Paths   []string  `json:"paths"`
-	Hash    string    `json:"credential_hash,omitempty"`
-	Revoked bool      `json:"revoked"`
-	Created time.Time `json:"created_at"`
+	AllowCreate bool      `json:"allow_create"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Paths       []string  `json:"paths"`
+	Hash        string    `json:"credential_hash,omitempty"`
+	Revoked     bool      `json:"revoked"`
+	Created     time.Time `json:"created_at"`
 }
 
 // manageWriteCredentials runs behind administrator session and CSRF checks.
@@ -47,8 +51,9 @@ func manageWriteCredentials(t storage.Tx, r *http.Request) (any, error) {
 			return out, nil
 		case "POST":
 			var in struct {
-				Name  string   `json:"name"`
-				Paths []string `json:"paths"`
+				AllowCreate bool     `json:"allow_create"`
+				Name        string   `json:"name"`
+				Paths       []string `json:"paths"`
 			}
 			if e := decode(r, &in); e != nil {
 				return nil, e
@@ -60,7 +65,7 @@ func manageWriteCredentials(t storage.Tx, r *http.Request) (any, error) {
 				return nil, bad(e.Error())
 			}
 			token := security.Token()
-			c := WriteCredential{ID: security.Token(), Name: in.Name, Paths: in.Paths, Hash: security.Hash(token), Created: time.Now().UTC()}
+			c := WriteCredential{AllowCreate: in.AllowCreate, ID: security.Token(), Name: in.Name, Paths: in.Paths, Hash: security.Hash(token), Created: time.Now().UTC()}
 			if e := t.Put("writers", c.ID, c); e != nil {
 				return nil, e
 			}
@@ -81,15 +86,23 @@ func manageWriteCredentials(t storage.Tx, r *http.Request) (any, error) {
 	switch r.Method {
 	case "PUT":
 		var in struct {
-			Paths []string `json:"paths"`
+			Paths       *[]string `json:"paths"`
+			AllowCreate *bool     `json:"allow_create"`
 		}
 		if e := decode(r, &in); e != nil {
 			return nil, e
 		}
-		if e := security.ValidateRules(in.Paths); e != nil {
-			return nil, bad(e.Error())
+		// Omitted fields preserve existing permissions. A supplied false turns
+		// creation off; a supplied empty paths array removes every path grant.
+		if in.Paths != nil {
+			if e := security.ValidateRules(*in.Paths); e != nil {
+				return nil, bad(e.Error())
+			}
+			c.Paths = *in.Paths
 		}
-		c.Paths = in.Paths
+		if in.AllowCreate != nil {
+			c.AllowCreate = *in.AllowCreate
+		}
 	case "DELETE":
 		// Revocation is permanent. Keeping the identity makes historical audit
 		// entries understandable; removing its token index stops authentication.
@@ -107,8 +120,10 @@ func manageWriteCredentials(t storage.Tx, r *http.Request) (any, error) {
 	return c, nil
 }
 
-// writeSecret accepts a simple POST but deliberately uses the existing update
-// behavior. Missing or deleted secrets return 404 instead of being created.
+// writeSecret accepts the same POST for updates and optional creation. The
+// credential, never the caller body, controls whether missing secrets may be
+// created. The existence check and write share the store transaction, preventing
+// concurrent requests from racing creation or losing revision increments.
 // Cloning preserves the original POST method in audit and structured logs.
 func (s *Server) writeSecret(t storage.Tx, r *http.Request, identity, path *string) (any, error) {
 	c, e := authenticateWriter(t, r)
@@ -130,5 +145,17 @@ func (s *Server) writeSecret(t storage.Tx, r *http.Request, identity, path *stri
 	}
 	update := r.Clone(r.Context())
 	update.Method = "PUT"
+	if c.AllowCreate {
+		var existing Secret
+		err := t.Get("secrets", normalized, &existing)
+		if err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return nil, err
+		}
+		// Tombstones count as missing. Reusing the normal creation path keeps
+		// their revision history monotonic when a deleted secret is recreated.
+		if errors.Is(err, storage.ErrNotFound) || existing.Deleted {
+			update.Method = "POST"
+		}
+	}
 	return s.secret(t, update, normalized, false)
 }
