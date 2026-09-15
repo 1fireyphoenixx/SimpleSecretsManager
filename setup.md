@@ -1,6 +1,6 @@
 # Installing and operating SimpleSecretsManager
 
-This guide installs SSM **0.0.4** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
+This guide installs SSM **0.0.5** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
 
 The normal sequence is: install binaries, configure TLS, initialize the database once, start the locked server, sign in and unlock, create secrets and an agent identity, then enroll the agent. The service units in `examples/systemd/` require no edits when these paths are used.
 
@@ -18,7 +18,7 @@ ssm-server -v
 ssm-agent -v
 ```
 
-Both commands must print `0.0.4`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
+Both commands must print `0.0.5`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
 
 Create a dedicated server account and private directories:
 
@@ -113,7 +113,7 @@ sudo systemctl enable --now ssm-server
 sudo journalctl -u ssm-server -n 30 --no-pager
 ```
 
-Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM v0.0.4** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
+Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM v0.0.5** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
 
 For CLI unlock, create mode-0600 temporary password/master files as in the previous step, then run:
 
@@ -126,9 +126,9 @@ ssm-server -unlock -server https://ssm.home.arpa:8443 \
 
 Remove those temporary files afterward. Run the command as the identity that can read them. CLI unlock logs in, obtains a CSRF token, unlocks over HTTPS, and logs out. Unlock bodies and responses are not logged; API responses include `Cache-Control: no-store`.
 
-Use **Lock server** to discard the in-memory DEK. Every restart starts locked. `SIGTERM` and `SIGINT` stop accepting requests, drain in-flight requests, lock the vault, and close the database.
+When unlocked, the unlock field and button disappear and **Lock server** takes their place. Use **Lock server** to discard the in-memory DEK. Every restart starts locked. `SIGTERM` and `SIGINT` stop accepting requests, drain in-flight requests, lock the vault, and close the database.
 
-To rotate the master key, use **Change master key** with the current and new keys. This re-wraps the same DEK and leaves stored secret ciphertext unchanged. The old key no longer unlocks the current database; older backups still require their original master key.
+To rotate the master key, choose **Change master key** to open a dialog with current and new key fields. Submit the dialog to apply the change. This re-wraps the same DEK and leaves stored secret ciphertext unchanged. The old key no longer unlocks the current database; older backups still require their original master key.
 
 ## 5. Create secrets and an agent identity
 
@@ -141,7 +141,7 @@ Paths are case-sensitive, relative names separated by `/`. Leading/trailing slas
 
 Choose **Create secret** to open a large editor prefilled with the current folder, or click a secret / **Edit** to replace it. The editor has a large resizable text area for certificates, private keys, and configuration. Existing values are not fetched automatically: choose **Reveal current value into editor** to load one explicitly. **Reveal** and **Copy** on a file are also explicit actions. Cancel, Escape, or closing the dialog clears the editor; failed saves keep your input so you can retry. Creation timestamps remain available through the metadata API.
 
-In **Agents & permissions**, create an agent named `web01` with this permission:
+In **Agents & permissions**, choose **Create agent** to open the setup dialog. Name it `web01`, set the enrollment token lifetime, and give it this permission:
 
 ```text
 servers/web01/*
@@ -149,22 +149,20 @@ servers/web01/*
 
 Permissions are default-deny. An exact rule grants that one secret; a terminal `/*` grants descendants, including deeper paths. `servers/web01/*` does not grant `servers/web010/password` or the parent `servers/web01`. Agents have read-only access. Administrators can also issue separate write credentials for scoped automated updates, as described below.
 
-In **Enrollment tokens**, select the new agent and generate a token. Expiry is configurable from 1 to 86,400 seconds. Copy it immediately; the plaintext is shown only in the creation response. A token is consumed by successful enrollment. Only one runtime credential can enroll an identity; other outstanding tokens for that identity stop working afterward. You can delete unused tokens.
+Complete the agent dialog to create the identity and display its enrollment token. Copy the token, then choose **Done**; closing the dialog clears it. Use **Edit permissions** on an agent row to edit its paths in a dedicated dialog. You can also generate a token for an unenrolled agent in **Enrollment tokens**. Expiry is configurable from 1 to 86,400 seconds. Copy it immediately; the plaintext is shown only in the creation response. A token is consumed by successful enrollment. Only one runtime credential can enroll an identity; other outstanding tokens for that identity stop working afterward. You can delete unused tokens.
 
 ### Scoped write credentials and curl updates
 
-In **Write credentials**, choose a name such as `certbot-example.com`, enter the
-paths it may update (one per line), and select **Create write credential**. Exact
+In **Write credentials**, choose **Create write credential**. Enter a name such as
+`certbot-example.com` and its allowed paths in the dialog. Submit to create it; the second step shows the bearer token to copy before selecting **Done**. Exact
 paths and terminal `/*` subtree rules work just like agent permissions. Copy the
-token immediately; it is displayed only once. Use **Edit paths** to change its
-scope or **Revoke** to permanently disable it. An empty path list denies all
+token immediately; it is displayed only once. Use **Edit permissions** to change its
+scope in a multiline dialog or **Revoke** to permanently disable it. An empty path list denies all
 updates. These credentials remain valid until revoked.
 
 By default, create the target secret through the WebUI first. To let the same
 curl POST create it automatically when missing, enable **Allow creation** when
-creating the credential, or use **Allow creation** on an existing credential's
-row. The listing shows whether creation is allowed; **Disable creation** removes
-that permission. Both creation and updates are restricted to the assigned paths.
+creating the credential, or open **Edit permissions** on an existing credential and select **Allow creation**. The listing shows whether creation is allowed; clearing **Allow creation** in the permission dialog removes that permission. Both creation and updates are restricted to the assigned paths.
 Credentials cannot read values, delete secrets, enroll agents, unlock SSM, or
 access administrative endpoints. The server must
 be unlocked for an update to succeed. Agent bearer tokens remain read-only.
@@ -407,7 +405,7 @@ curl --fail --cacert /path/to/lab-ca.crt https://ssm.home.arpa:8443/api/v1/ready
 
 Health is available locked; readiness returns 503 locked. Neither exposes secret names, database credentials, or encryption material. An uninitialized database also remains unready until setup and unlock.
 
-Server and agent logs use structured JSON with configurable levels. Audit records in the database capture timestamps, identity, operation, success/failure, secret path where relevant, and the direct peer source address. The server deliberately ignores forwarded source headers; behind a proxy, the source is the proxy. Audit access uses **Server & audit → View audit log** (opens a separate window with newest-first events and expandable raw JSON) or `/api/v1/admin/audit`. Request bodies, plaintext bearer credentials, and secret values are excluded. Audit records are not tamper-proof against someone with database write access; export/retain database backups accordingly. Listings and audit retrieval are unpaginated in 0.0.4, so monitor database growth; there is no automatic retention cleanup.
+Server and agent logs use structured JSON with configurable levels. Audit records in the database capture timestamps, identity, operation, success/failure, secret path where relevant, and the direct peer source address. The server deliberately ignores forwarded source headers; behind a proxy, the source is the proxy. Audit access uses **Server & audit → View audit log** (opens a separate window with newest-first events and expandable raw JSON) or `/api/v1/admin/audit`. Request bodies, plaintext bearer credentials, and secret values are excluded. Audit records are not tamper-proof against someone with database write access; export/retain database backups accordingly. Listings and audit retrieval are unpaginated in 0.0.5, so monitor database growth; there is no automatic retention cleanup.
 
 For a simple consistent SQLite backup, stop SSM, copy its entire state directory, then restart and unlock:
 

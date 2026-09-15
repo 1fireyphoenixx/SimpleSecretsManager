@@ -1,6 +1,6 @@
 # SimpleSecretsManager (SSM)
 
-**Version 0.0.4** — a small, self-hosted secrets service for Linux homelabs, written in Go.
+**Version 0.0.5** — a small, self-hosted secrets service for Linux homelabs, written in Go.
 
 SSM provides the everyday workflow of storing encrypted secrets centrally and delivering them to machines or Kubernetes. It includes `ssm-server`, an embedded administrative WebUI, and `ssm-agent`. The WebUI keeps the installed version and server lock status in its persistent header.
 
@@ -54,7 +54,7 @@ MySQL tests remove SSM records in that database. Do not point them at an install
 
 ## Scope and operational boundaries
 
-SSM 0.0.4 implements a static secret store and delivery agent. It does not implement Vault's dynamic database credentials, leases, PKI engine, Shamir unseal, or HA coordination. Run one server instance per database; transactions protect record consistency, but each process has its own in-memory lock state.
+SSM 0.0.5 implements a static secret store and delivery agent. It does not implement Vault's dynamic database credentials, leases, PKI engine, Shamir unseal, or HA coordination. Run one server instance per database; transactions protect record consistency, but each process has its own in-memory lock state.
 
 The master key is your recovery material: losing it makes the encrypted secrets unrecoverable. Keep it outside the server. Metadata, permission rules, and audit records are not encrypted; secret values are. A privileged attacker controlling an unlocked process can access its in-memory data. Disable core dumps and use encrypted swap or disable swap on secret-bearing hosts. Go cannot guarantee removal of every transient copy of a secret from memory.
 
