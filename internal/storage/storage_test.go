@@ -2,11 +2,14 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The identical contract runs on both real engines. MYSQL_TEST_DSN must point
@@ -163,4 +166,67 @@ func TestFutureSchemaRejected(t *testing.T) {
 		newer.Close()
 		t.Fatal("future schema accepted")
 	}
+}
+
+// Scan must stop at its initial high-water mark and release the connection
+// before invoking callbacks, including when a callback writes another record.
+func scanContract(t *testing.T, driver, dsn string) {
+	t.Helper()
+	ctx := context.Background()
+	s, err := Open(ctx, driver, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	kind := "test"
+	defer s.db.Exec("DELETE FROM records WHERE kind=?", kind)
+	if err = s.Update(ctx, func(tx Tx) error {
+		for i := 0; i < 600; i++ {
+			if err := tx.Put(kind, fmt.Sprintf("%06d", i), map[string]int{"n": i}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	count := 0
+	if err = s.Scan(bounded, kind, func(raw json.RawMessage) error {
+		var item map[string]int
+		if e := json.Unmarshal(raw, &item); e != nil {
+			return e
+		}
+		if item["n"] != count {
+			t.Errorf("out of order: %d", item["n"])
+		}
+		count++
+		if count == 1 {
+			return s.Update(bounded, func(tx Tx) error { return tx.Put(kind, "999999", map[string]int{"n": 999999}) })
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if count != 600 {
+		t.Fatalf("export followed new records or lost data: %d", count)
+	}
+	stop := errors.New("consumer stopped")
+	if err = s.Scan(ctx, kind, func(json.RawMessage) error { return stop }); !errors.Is(err, stop) {
+		t.Fatal("consumer error ignored")
+	}
+	canceled, cancelNow := context.WithCancel(ctx)
+	cancelNow()
+	if err = s.Scan(canceled, kind, func(json.RawMessage) error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Fatal("cancellation ignored")
+	}
+}
+func TestSQLiteScan(t *testing.T) { scanContract(t, "sqlite", filepath.Join(t.TempDir(), "scan.db")) }
+func TestMySQLScan(t *testing.T) {
+	dsn := os.Getenv("MYSQL_TEST_DSN")
+	if dsn == "" {
+		t.Skip("MYSQL_TEST_DSN not set")
+	}
+	scanContract(t, "mysql", dsn)
 }

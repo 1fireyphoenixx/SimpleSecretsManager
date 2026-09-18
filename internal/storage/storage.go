@@ -28,6 +28,7 @@ type Store interface {
 	Ping(context.Context) error
 	Close() error
 	SchemaVersion(context.Context) (int, error)
+	Scan(context.Context, string, func(json.RawMessage) error) error
 }
 type SQLStore struct{ db *sql.DB }
 type sqlTx struct{ tx *sql.Tx }
@@ -170,4 +171,50 @@ func (t *sqlTx) List(kind string) ([]json.RawMessage, error) {
 		out = append(out, json.RawMessage(b))
 	}
 	return out, rows.Err()
+}
+
+// Scan exports records in bounded batches. It releases the database connection
+// before calling the consumer, so a slow download cannot monopolize the single
+// connection used by this store. A fixed upper ID keeps new audit activity from
+// extending a download forever. Audit records are append-only.
+func (s *SQLStore) Scan(ctx context.Context, kind string, visit func(json.RawMessage) error) error {
+	var upper string
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(id),'') FROM records WHERE kind=?", kind).Scan(&upper); err != nil {
+		return err
+	}
+	after := ""
+	for after < upper {
+		rows, err := s.db.QueryContext(ctx, "SELECT id,document FROM records WHERE kind=? AND id>? AND id<=? ORDER BY id LIMIT 256", kind, after, upper)
+		if err != nil {
+			return err
+		}
+		batch := make([]json.RawMessage, 0, 256)
+		for rows.Next() {
+			var id string
+			var document []byte
+			if err = rows.Scan(&id, &document); err != nil {
+				rows.Close()
+				return err
+			}
+			after = id
+			batch = append(batch, json.RawMessage(document))
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			return nil
+		}
+		for _, document := range batch {
+			if err = ctx.Err(); err != nil {
+				return err
+			}
+			if err = visit(document); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

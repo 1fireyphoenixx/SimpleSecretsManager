@@ -127,7 +127,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Strict-Transport-Security", "max-age=31536000")
-	if r.URL.Path == "/" || r.URL.Path == "/app.js" || r.URL.Path == "/style.css" || r.URL.Path == "/browse.js" || r.URL.Path == "/audit" || r.URL.Path == "/audit.js" {
+	if r.URL.Path == "/audit" {
+		http.Redirect(w, r, "/api/v1/admin/audit/download", http.StatusSeeOther)
+		return
+	}
+	if r.URL.Path == "/" || r.URL.Path == "/app.js" || r.URL.Path == "/style.css" || r.URL.Path == "/browse.js" {
 		s.ui(w, r)
 		return
 	}
@@ -192,6 +196,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if cookie != nil {
 		http.SetCookie(w, cookie)
+	}
+	if _, download := result.(auditDownload); download {
+		s.downloadAudit(w, r)
+		return
 	}
 	write(w, code, result)
 }
@@ -476,6 +484,10 @@ func (s *Server) route(t storage.Tx, r *http.Request, identity, path *string) (a
 				}
 				return ok(map[string]bool{"ok": true})
 			}
+		case "/api/v1/admin/audit/download":
+			if r.Method == "GET" {
+				return ok(auditDownload{})
+			}
 		case "/api/v1/admin/audit":
 			if r.Method == "GET" {
 				rows, e := t.List("audit")
@@ -517,6 +529,13 @@ func (s *Server) route(t storage.Tx, r *http.Request, identity, path *string) (a
 				}
 			}
 			return fail(storage.ErrNotFound)
+		}
+		if strings.HasPrefix(p, "/api/v1/admin/agents/") && strings.HasSuffix(p, "/purge") && r.Method == "DELETE" {
+			id := strings.TrimSuffix(strings.TrimPrefix(p, "/api/v1/admin/agents/"), "/purge")
+			if e = deleteAgent(t, id); e != nil {
+				return fail(e)
+			}
+			return ok(map[string]bool{"ok": true})
 		}
 		if strings.HasPrefix(p, "/api/v1/admin/agents/") {
 			id := strings.TrimPrefix(p, "/api/v1/admin/agents/")

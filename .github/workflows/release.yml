@@ -1,0 +1,119 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "*"
+
+# Build/test jobs need only read access. Publishing has its own write permission.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ssm-test-only-password
+          MYSQL_DATABASE: ssm_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --host=127.0.0.1 --password=ssm-test-only-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      MYSQL_TEST_DSN: root:ssm-test-only-password@tcp(127.0.0.1:3306)/ssm_test?timeout=10s
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error::Use a version tag such as v1.0.0, 1.0.0, or v1.1.0-rc.1."
+            exit 1
+          fi
+          if [[ "$version" != "$(cat VERSION)" ]]; then
+            echo "::error::The tag version must match VERSION. Update the project version before tagging."
+            exit 1
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js for UI tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Includes race-enabled HTTPS integration and real SQLite/MySQL tests.
+      - name: Check and test
+        run: make check test-ui
+
+      # The Makefile injects VERSION into both binaries and the embedded WebUI,
+      # then packages both binaries, documentation, and examples per architecture.
+      - name: Build release archives
+        run: make release
+
+      - name: Verify release versions and checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          for app in server agent; do
+            installed_version=$("dist/ssm-${RELEASE_VERSION}-linux-amd64/ssm-${app}" -v)
+            test "$installed_version" = "$RELEASE_VERSION"
+          done
+          cd dist
+          sha256sum --check SHA256SUMS
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: artifacts
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: SSM ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS

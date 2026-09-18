@@ -1,6 +1,6 @@
 # Installing and operating SimpleSecretsManager
 
-This guide installs SSM **0.0.5** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
+This guide installs SSM **1.0.0** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
 
 The normal sequence is: install binaries, configure TLS, initialize the database once, start the locked server, sign in and unlock, create secrets and an agent identity, then enroll the agent. The service units in `examples/systemd/` require no edits when these paths are used.
 
@@ -18,7 +18,7 @@ ssm-server -v
 ssm-agent -v
 ```
 
-Both commands must print `0.0.5`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
+Both commands must print `1.0.0`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
 
 Create a dedicated server account and private directories:
 
@@ -113,7 +113,7 @@ sudo systemctl enable --now ssm-server
 sudo journalctl -u ssm-server -n 30 --no-pager
 ```
 
-Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM v0.0.5** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
+Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM v1.0.0** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
 
 For CLI unlock, create mode-0600 temporary password/master files as in the previous step, then run:
 
@@ -254,6 +254,23 @@ Enrollment stores a separate runtime credential in `/var/lib/ssm-agent/credentia
 
 If enrollment succeeded on the server but its response or local credential write was lost, the one-time token cannot be replayed. Revoke that identity, create a new identity and enrollment token, and enroll again. If a runtime credential is revoked, the agent retains existing files and logs failed polls; it never silently re-enrolls with an old token.
 
+### Reinstalling or replacing a host
+
+Choose **Delete** on its row in **Agents & permissions** and confirm. This
+permanently removes the agent identity, its runtime credential, and every related
+enrollment token (including expired and consumed tokens) in one transaction.
+It works for active and revoked agents. Other agents, server secrets, and audit
+history are retained. **Revoke** still disables access while keeping the identity.
+
+You can create a replacement using the same name; names are display labels,
+while IDs are unique. An old runtime credential cannot authenticate as the new
+identity. Reinstalling the binary alone does not clear the agent's runtime state.
+On the host, stop `ssm-agent`, remove the old
+`/var/lib/ssm-agent/credentials.json` and `/var/lib/ssm-agent/revisions.json`, and
+supply a fresh enrollment token in `/etc/ssm-agent/config.yaml` before starting it.
+Keep the state directory mode 0700. Existing deployed secret files are retained;
+clearing the revision journal makes the replacement reapply its definitions.
+
 For a one-shot verification, stop the service and use `sudo ssm-agent -once`. A process lock prevents simultaneous agents from sharing the same state directory.
 
 ### Definition files and templates
@@ -371,12 +388,14 @@ All JSON endpoints begin with `/api/v1/`. Successful operations currently return
 | GET / POST | `/admin/write-credentials` | Administrator; list or create `{name,paths:[...],allow_create:false}`, returning a token once |
 | PUT / DELETE | `/admin/write-credentials/<id>` | Administrator; edit `{paths:[...],allow_create:true}` or permanently revoke; omitted fields are preserved |
 | GET / POST | `/admin/agents` | Administrator; list or create `{name,paths:[...]}` |
-| PUT / DELETE | `/admin/agents/<id>` | Administrator; replace `{paths:[...]}` or revoke |
+| PUT / DELETE | `/admin/agents/<id>` | Administrator; replace `{paths:[...]}` or revoke (retains identity) |
+| DELETE | `/admin/agents/<id>/purge` | Administrator + CSRF; permanently delete identity, runtime credential, and all associated enrollment tokens |
 | GET / POST | `/admin/enrollment` | Administrator; list or create `{agent_id,ttl_seconds}` |
 | DELETE | `/admin/enrollment/<id>` | Administrator; delete enrollment token |
 | GET / POST | `/admin/administrators` | Administrator; list names or create/change `{name,password}` |
 | DELETE | `/admin/administrators/<name>` | Administrator; delete another administrator |
-| GET | `/admin/audit` | Administrator; audit records |
+| GET | `/admin/audit/download` | Administrator; streamed `.txt` attachment, one JSON audit event per line |
+| GET | `/admin/audit` | Administrator; legacy JSON audit records |
 
 Table paths are relative to `/api/v1`. All administrative writes require `X-CSRF-Token` from the login/session response and the `ssm_session` cookie. Browser writes are restricted to the same HTTPS origin; cross-origin CORS access is not enabled. Cookie attributes are Secure, HttpOnly, and SameSite=Strict. Password changes invalidate that administrator's sessions. Self-deletion is rejected to avoid removing the last usable administrator accidentally.
 
@@ -405,7 +424,7 @@ curl --fail --cacert /path/to/lab-ca.crt https://ssm.home.arpa:8443/api/v1/ready
 
 Health is available locked; readiness returns 503 locked. Neither exposes secret names, database credentials, or encryption material. An uninitialized database also remains unready until setup and unlock.
 
-Server and agent logs use structured JSON with configurable levels. Audit records in the database capture timestamps, identity, operation, success/failure, secret path where relevant, and the direct peer source address. The server deliberately ignores forwarded source headers; behind a proxy, the source is the proxy. Audit access uses **Server & audit → View audit log** (opens a separate window with newest-first events and expandable raw JSON) or `/api/v1/admin/audit`. Request bodies, plaintext bearer credentials, and secret values are excluded. Audit records are not tamper-proof against someone with database write access; export/retain database backups accordingly. Listings and audit retrieval are unpaginated in 0.0.5, so monitor database growth; there is no automatic retention cleanup.
+Server and agent logs use structured JSON with configurable levels. Audit records in the database capture timestamps, identity, operation, success/failure, secret path where relevant, and the direct peer source address. The server deliberately ignores forwarded source headers; behind a proxy, the source is the proxy. Audit access uses **Server & audit → Download logs (.txt)** or `/api/v1/admin/audit/download`. Request bodies, plaintext bearer credentials, and secret values are excluded. Audit records are not tamper-proof against someone with database write access; export/retain database backups accordingly. Downloads stream a text attachment using bounded database batches and a fixed upper record ID; the page does not buffer or render the log. The legacy JSON listing remains available for API compatibility and is unpaginated. Monitor database growth; there is no automatic retention cleanup. Deleted agents remain identifiable by their original IDs in historical audit records.
 
 For a simple consistent SQLite backup, stop SSM, copy its entire state directory, then restart and unlock:
 

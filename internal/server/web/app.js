@@ -24,7 +24,10 @@ const encoded = path => path.split('/').map(encodeURIComponent).join('/');
 async function refresh(){const generation=authGeneration;await status();const [secrets,agents,enrollments,admins,writers]=await Promise.all(['secrets','agents','enrollment','administrators','write-credentials'].map(p=>api('admin/'+p)));
  if(!csrf || generation!==authGeneration)return;
  secretMetadata=secrets;renderFolder();
- table('agent-list',['Name / ID','Paths','State','Actions'],agents.map(a=>[a.name+' / '+a.id,(a.paths||[]).join('\n'),a.revoked?'Revoked':'Active',a.revoked?[]:[action('Edit permissions',()=>openPermissions('agent',a)),action('Revoke',async()=>{if(confirm('Revoke '+a.name+'?')){await api('admin/agents/'+a.id,'DELETE');await refresh();}})]]));
+ table('agent-list',['Name / ID','Paths','State','Actions'],agents.map(a=>[a.name+' / '+a.id,(a.paths||[]).join('\n'),a.revoked?'Revoked':'Active',[
+  ...(a.revoked?[]:[action('Edit permissions',()=>openPermissions('agent',a)),action('Revoke',async()=>{if(confirm('Revoke '+a.name+'?')){await api('admin/agents/'+a.id,'DELETE');await refresh();}})]),
+  action('Delete',async()=>{if(confirm('Permanently delete '+a.name+' and all its enrollment tokens and runtime credentials? Existing deployed files are retained.')){await api('admin/agents/'+a.id+'/purge','DELETE');$('new-token').textContent='';await refresh();}})
+ ]]));
  $('enrollment-agent').replaceChildren(...agents.filter(a=>!a.revoked).map(a=>{const o=document.createElement('option');o.value=a.id;o.textContent=a.name+' / '+a.id;return o;}));
  table('enrollment-list',['ID','Agent','Expires','Used','Actions'],enrollments.map(e=>[e.id,e.agent_id,e.expires_at,e.used,[action('Delete token',async()=>{await api('admin/enrollment/'+e.id,'DELETE');await refresh();})]]));
  // Names and paths are untrusted server data; table() always inserts text.
@@ -38,7 +41,6 @@ form('enrollment-form',async d=>{const v=await api('admin/enrollment','POST',{ag
 form('admin-form',async d=>{await api('admin/administrators','POST',d);await refresh();});
 $('logout').onclick=async()=>{try{await api('admin/logout','POST',{});signedOut();}catch(e){message(e.message);}};
 $('lock').onclick=async()=>{try{await api('admin/lock','POST',{});await status();}catch(e){message(e.message);}};
-$('audit-refresh').onclick=()=>{window.open('/audit','_blank','noopener,width=1200,height=850');};
 $('hide-token').onclick=()=>{$('new-token').textContent='';};
 $('close-reveal').onclick=()=>{$('revealed-value').textContent='';$('reveal').close();};
 $('reveal').addEventListener('close',()=>{$('revealed-value').textContent='';});

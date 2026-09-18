@@ -19,16 +19,13 @@ func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
 	}
 	file := "index.html"
 	mime := "text/html; charset=utf-8"
-	if r.URL.Path == "/app.js" || r.URL.Path == "/browse.js" || r.URL.Path == "/audit.js" {
+	if r.URL.Path == "/app.js" || r.URL.Path == "/browse.js" {
 		file = strings.TrimPrefix(r.URL.Path, "/")
 		mime = "application/javascript"
 	}
 	if r.URL.Path == "/style.css" {
 		file = "style.css"
 		mime = "text/css"
-	}
-	if r.URL.Path == "/audit" {
-		file = "audit.html"
 	}
 	b, e := assets.ReadFile("web/" + file)
 	if e != nil {
