@@ -42,12 +42,13 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          version="${RELEASE_TAG#v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
-            echo "::error::Use a version tag such as v1.0.0, 1.0.0, or v1.1.0-rc.1."
+          tag_version="${RELEASE_TAG#[vV]}"
+          version="$(cat VERSION)"
+          if [[ ! "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(LTS|-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error::Use a version tag such as v1.0.1-lts1, v1.1.0, or v1.1.0-rc.1."
             exit 1
           fi
-          if [[ "$version" != "$(cat VERSION)" ]]; then
+          if [[ "$tag_version" != "${version#[vV]}" ]]; then
             echo "::error::The tag version must match VERSION. Update the project version before tagging."
             exit 1
           fi
