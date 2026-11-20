@@ -1,6 +1,6 @@
 # SimpleSecretsManager (SSM)
 
-**Version V1.0.1-LTS1** — a small, self-hosted secrets service for Linux homelabs, written in Go.
+**Version v1.0.1-lts1** — a small, self-hosted secrets service for Linux homelabs, written in Go.
 
 SSM provides the everyday workflow of storing encrypted secrets centrally and delivering them to machines or Kubernetes. It includes `ssm-server`, an embedded administrative WebUI, and `ssm-agent`. The WebUI keeps the installed version and server lock status in its persistent header.
 
@@ -45,7 +45,7 @@ MySQL tests remove SSM records in that database. Do not point them at an install
 
 Pushing a version tag runs [the release workflow](.github/workflows/release.yml).
 It runs the Go race-enabled tests (including MySQL), UI tests, and checks, then
-publishes a GitHub release named **SSM V1.0.1-LTS1** for a tag such as `V1.0.1-LTS1`.
+publishes a GitHub release named **SSM v1.0.1-lts1** for a tag such as `v1.0.1-lts1`.
 The release includes both Linux architecture archives, `SHA256SUMS`, and generated
 release notes. Each archive contains the server, agent, documentation, and examples.
 
@@ -53,12 +53,12 @@ Before tagging, update `VERSION`, the fallback in `internal/version/version.go`,
 and version references in documentation/tests, then commit those changes.
 The tag’s version must match `VERSION`, ignoring an optional leading `v` or `V`.
 The stored version is preserved exactly in binaries, the WebUI, and archive names.
-An `LTS` suffix is supported and produces a normal release, not a prerelease.
-For example, once version V1.0.1-LTS1 is committed:
+Hyphenated tags, including `v1.0.1-lts1`, are published as GitHub prereleases.
+For example, once version v1.0.1-lts1 is committed:
 
 ```sh
-git tag V1.0.1-LTS1
-git push origin V1.0.1-LTS1
+git tag v1.0.1-lts1
+git push origin v1.0.1-lts1
 ```
 
 Pre-release tags such as `v1.1.0-rc.1` are also supported when `VERSION` matches
@@ -80,7 +80,7 @@ must be enabled for the repository.
 
 ## Scope and operational boundaries
 
-SSM V1.0.1-LTS1 implements a static secret store and delivery agent. It does not implement Vault's dynamic database credentials, leases, PKI engine, Shamir unseal, or HA coordination. Run one server instance per database; transactions protect record consistency, but each process has its own in-memory lock state.
+SSM v1.0.1-lts1 implements a static secret store and delivery agent. It does not implement Vault's dynamic database credentials, leases, PKI engine, Shamir unseal, or HA coordination. Run one server instance per database; transactions protect record consistency, but each process has its own in-memory lock state.
 
 The master key is your recovery material: losing it makes the encrypted secrets unrecoverable. Keep it outside the server. Metadata, permission rules, and audit records are not encrypted; secret values are. A privileged attacker controlling an unlocked process can access its in-memory data. Disable core dumps and use encrypted swap or disable swap on secret-bearing hosts. Go cannot guarantee removal of every transient copy of a secret from memory.
 

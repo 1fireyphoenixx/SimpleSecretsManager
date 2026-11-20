@@ -1,6 +1,6 @@
 # Installing and operating SimpleSecretsManager
 
-This guide installs SSM **V1.0.1-LTS1** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
+This guide installs SSM **v1.0.1-lts1** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
 
 The normal sequence is: install binaries, configure TLS, initialize the database once, start the locked server, sign in and unlock, create secrets and an agent identity, then enroll the agent. The service units in `examples/systemd/` require no edits when these paths are used.
 
@@ -18,7 +18,7 @@ ssm-server -v
 ssm-agent -v
 ```
 
-Both commands must print `V1.0.1-LTS1`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
+Both commands must print `v1.0.1-lts1`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
 
 Create a dedicated server account and private directories:
 
@@ -113,7 +113,7 @@ sudo systemctl enable --now ssm-server
 sudo journalctl -u ssm-server -n 30 --no-pager
 ```
 
-Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM V1.0.1-LTS1** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
+Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM v1.0.1-lts1** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
 
 For CLI unlock, create mode-0600 temporary password/master files as in the previous step, then run:
 
