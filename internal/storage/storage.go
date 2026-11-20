@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	_ "modernc.org/sqlite"
@@ -22,6 +24,7 @@ type Tx interface {
 	Put(kind, id string, value any) error
 	Delete(kind, id string) error
 	List(kind string) ([]json.RawMessage, error)
+	PurgeAuditBefore(time.Time) (int64, error)
 }
 type Store interface {
 	Update(context.Context, func(Tx) error) error
@@ -176,7 +179,8 @@ func (t *sqlTx) List(kind string) ([]json.RawMessage, error) {
 // Scan exports records in bounded batches. It releases the database connection
 // before calling the consumer, so a slow download cannot monopolize the single
 // connection used by this store. A fixed upper ID keeps new audit activity from
-// extending a download forever. Audit records are append-only.
+// extending a download forever. Retained audit records are immutable; a
+// concurrent retention purge may remove records from later export batches.
 func (s *SQLStore) Scan(ctx context.Context, kind string, visit func(json.RawMessage) error) error {
 	var upper string
 	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(id),'') FROM records WHERE kind=?", kind).Scan(&upper); err != nil {
@@ -217,4 +221,68 @@ func (s *SQLStore) Scan(ctx context.Context, kind string, visit func(json.RawMes
 		}
 	}
 	return nil
+}
+
+// PurgeAuditBefore only deletes audit records. The records table also contains
+// secrets and the wrapped encryption key, so TRUNCATE must never be used here.
+// Read small batches, close their cursor, then delete expired IDs in the same
+// transaction. Parse the stored event timestamp rather than comparing ID text:
+// RFC3339 offsets and fractional seconds do not always sort chronologically.
+func (t *sqlTx) PurgeAuditBefore(cutoff time.Time) (int64, error) {
+	var deleted int64
+	after := ""
+	for {
+		rows, err := t.tx.Query("SELECT id,document FROM records WHERE kind='audit' AND id>? ORDER BY id LIMIT 256", after)
+		if err != nil {
+			return 0, err
+		}
+		ids := make([]string, 0, 256)
+		count := 0
+		for rows.Next() {
+			var id string
+			var document []byte
+			if err = rows.Scan(&id, &document); err != nil {
+				rows.Close()
+				return 0, err
+			}
+			var event struct {
+				Timestamp time.Time `json:"timestamp"`
+			}
+			if err = json.Unmarshal(document, &event); err != nil {
+				rows.Close()
+				return 0, fmt.Errorf("invalid audit timestamp: %w", err)
+			}
+			// Undated legacy records are retained: their age cannot be determined.
+			if !event.Timestamp.IsZero() && event.Timestamp.Before(cutoff) {
+				ids = append(ids, id)
+			}
+			after = id
+			count++
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return 0, err
+		}
+		if len(ids) > 0 {
+			// One bounded DELETE per page avoids a round trip per audit event.
+			args := make([]any, len(ids))
+			for i, id := range ids {
+				args[i] = id
+			}
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+			result, err := t.tx.Exec("DELETE FROM records WHERE kind='audit' AND id IN ("+placeholders+")", args...)
+			if err != nil {
+				return 0, err
+			}
+			n, err := result.RowsAffected()
+			if err != nil {
+				return 0, err
+			}
+			deleted += n
+		}
+		if count < 256 {
+			return deleted, nil
+		}
+	}
 }

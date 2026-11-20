@@ -1,12 +1,12 @@
 # Installing and operating SimpleSecretsManager
 
-This guide installs SSM **1.0.0** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
+This guide installs SSM **V1.0.1-LTS1** on a Linux server and a Linux client using systemd. It assumes you have root access, a DNS name such as `ssm.home.arpa`, and a certificate that clients can verify. Examples use port 8443 and SQLite. The MySQL and Kubernetes sections explain their additional configuration.
 
 The normal sequence is: install binaries, configure TLS, initialize the database once, start the locked server, sign in and unlock, create secrets and an agent identity, then enroll the agent. The service units in `examples/systemd/` require no edits when these paths are used.
 
 ## 1. Build and install
 
-Install Go 1.25 or newer on your build host, then run:
+Install Go 1.26 or newer on your build host, then run:
 
 ```sh
 make build
@@ -18,7 +18,7 @@ ssm-server -v
 ssm-agent -v
 ```
 
-Both commands must print `1.0.0`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
+Both commands must print `V1.0.1-LTS1`. You can instead install the binaries from the appropriate `make release` archive. Server and agent hosts need only their respective binary. Building releases requires Go but running them does not.
 
 Create a dedicated server account and private directories:
 
@@ -113,7 +113,7 @@ sudo systemctl enable --now ssm-server
 sudo journalctl -u ssm-server -n 30 --no-pager
 ```
 
-Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM v1.0.0** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
+Open `https://ssm.home.arpa:8443`. Sign in with the administrator created during setup. The persistent header shows **SSM V1.0.1-LTS1** and **LOCKED**. Select **Server & audit**, enter the master key, and choose **Unlock server**. The header changes to **UNLOCKED**. Authentication, agent management, and metadata listings remain available while locked; operations on secret values do not.
 
 For CLI unlock, create mode-0600 temporary password/master files as in the previous step, then run:
 
@@ -394,6 +394,7 @@ All JSON endpoints begin with `/api/v1/`. Successful operations currently return
 | DELETE | `/admin/enrollment/<id>` | Administrator; delete enrollment token |
 | GET / POST | `/admin/administrators` | Administrator; list names or create/change `{name,password}` |
 | DELETE | `/admin/administrators/<name>` | Administrator; delete another administrator |
+| POST | `/admin/audit/purge` | Administrator + CSRF; `{days:30,confirm:true}`, removes older audit records only |
 | GET | `/admin/audit/download` | Administrator; streamed `.txt` attachment, one JSON audit event per line |
 | GET | `/admin/audit` | Administrator; legacy JSON audit records |
 
@@ -425,6 +426,24 @@ curl --fail --cacert /path/to/lab-ca.crt https://ssm.home.arpa:8443/api/v1/ready
 Health is available locked; readiness returns 503 locked. Neither exposes secret names, database credentials, or encryption material. An uninitialized database also remains unready until setup and unlock.
 
 Server and agent logs use structured JSON with configurable levels. Audit records in the database capture timestamps, identity, operation, success/failure, secret path where relevant, and the direct peer source address. The server deliberately ignores forwarded source headers; behind a proxy, the source is the proxy. Audit access uses **Server & audit → Download logs (.txt)** or `/api/v1/admin/audit/download`. Request bodies, plaintext bearer credentials, and secret values are excluded. Audit records are not tamper-proof against someone with database write access; export/retain database backups accordingly. Downloads stream a text attachment using bounded database batches and a fixed upper record ID; the page does not buffer or render the log. The legacy JSON listing remains available for API compatibility and is unpaginated. Monitor database growth; there is no automatic retention cleanup. Deleted agents remain identifiable by their original IDs in historical audit records.
+
+### Purge older audit records
+
+Under **Server & audit → Audit log**, the **Purge audit log** section accepts the
+number of days to keep. Choose **Purge…**, review the retention period, then choose
+**Confirm purge**. Cancel or Escape leaves the database unchanged. Days are rolling
+24-hour periods, and the cutoff is calculated in UTC at confirmation time. Use
+0 to remove all dated audit history up to that point; the purge operation itself
+is recorded afterwards. The response reports the number deleted and the cutoff.
+
+Only `kind = audit` rows in the shared `records` table are eligible. Secrets,
+encryption keys, administrators, sessions, agents, and tokens are preserved.
+This is a selective deletion, not SQL `TRUNCATE`. Events at the cutoff or newer
+are kept; undated legacy events are retained because their age is unknown.
+Malformed timestamps abort and roll back the operation rather than guessing.
+The feature works while locked and requires administrator authentication and CSRF
+protection. Download a copy beforehand if you need an archive. Deletion frees
+space for database reuse but does not necessarily shrink the on-disk database.
 
 For a simple consistent SQLite backup, stop SSM, copy its entire state directory, then restart and unlock:
 

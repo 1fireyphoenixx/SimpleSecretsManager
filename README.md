@@ -1,6 +1,6 @@
 # SimpleSecretsManager (SSM)
 
-**Version 1.0.0** — a small, self-hosted secrets service for Linux homelabs, written in Go.
+**Version V1.0.1-LTS1** — a small, self-hosted secrets service for Linux homelabs, written in Go.
 
 SSM provides the everyday workflow of storing encrypted secrets centrally and delivering them to machines or Kubernetes. It includes `ssm-server`, an embedded administrative WebUI, and `ssm-agent`. The WebUI keeps the installed version and server lock status in its persistent header.
 
@@ -13,13 +13,13 @@ SSM provides the everyday workflow of storing encrypted secrets centrally and de
 - Store records in SQLite or MySQL with tracked, automatic schema migrations.
 - Deploy raw values or Go-template output through atomic, symlink-resistant file replacement. Poll metadata first, persist applied revisions, and retry outages and local hooks.
 - Authenticate administrators using expiring secure-cookie sessions and CSRF protection. Authenticate agents and Kubernetes using independent bearer credentials over verified TLS.
-- Record audit events without secret values or plaintext credentials; download a streamed `.txt` audit export from the WebUI. Expose liveness and readiness while locked.
+- Record audit events without secret values or plaintext credentials; download a streamed `.txt` audit export and purge older audit records with a confirmed days-to-keep policy from the WebUI. Expose liveness and readiness while locked.
 
 Start with **[setup.md](setup.md)** for a complete installation, certificate setup, enrollment, unlock, backup, and Kubernetes walkthrough. Copy-ready units and configuration examples are in [examples](examples).
 
 ## Build and test
 
-Requires Go 1.25 or newer; Linux is the supported runtime. SQLite uses a pure-Go driver, so release binaries do not need a C toolchain or system SQLite library.
+Requires Go 1.26 or newer; Linux is the supported runtime. SQLite uses a pure-Go driver, so release binaries do not need a C toolchain or system SQLite library.
 
 ```sh
 make build
@@ -45,18 +45,20 @@ MySQL tests remove SSM records in that database. Do not point them at an install
 
 Pushing a version tag runs [the release workflow](.github/workflows/release.yml).
 It runs the Go race-enabled tests (including MySQL), UI tests, and checks, then
-publishes a GitHub release named **SSM v1.0.0** for a tag such as `v1.0.0`.
+publishes a GitHub release named **SSM V1.0.1-LTS1** for a tag such as `V1.0.1-LTS1`.
 The release includes both Linux architecture archives, `SHA256SUMS`, and generated
 release notes. Each archive contains the server, agent, documentation, and examples.
 
 Before tagging, update `VERSION`, the fallback in `internal/version/version.go`,
 and version references in documentation/tests, then commit those changes.
-The tag's version must match `VERSION`; an optional leading `v` is accepted.
-For example, once version 1.0.0 is committed:
+The tag’s version must match `VERSION`, ignoring an optional leading `v` or `V`.
+The stored version is preserved exactly in binaries, the WebUI, and archive names.
+An `LTS` suffix is supported and produces a normal release, not a prerelease.
+For example, once version V1.0.1-LTS1 is committed:
 
 ```sh
-git tag v1.0.0
-git push origin v1.0.0
+git tag V1.0.1-LTS1
+git push origin V1.0.1-LTS1
 ```
 
 Pre-release tags such as `v1.1.0-rc.1` are also supported when `VERSION` matches
@@ -78,7 +80,7 @@ must be enabled for the repository.
 
 ## Scope and operational boundaries
 
-SSM 1.0.0 implements a static secret store and delivery agent. It does not implement Vault's dynamic database credentials, leases, PKI engine, Shamir unseal, or HA coordination. Run one server instance per database; transactions protect record consistency, but each process has its own in-memory lock state.
+SSM V1.0.1-LTS1 implements a static secret store and delivery agent. It does not implement Vault's dynamic database credentials, leases, PKI engine, Shamir unseal, or HA coordination. Run one server instance per database; transactions protect record consistency, but each process has its own in-memory lock state.
 
 The master key is your recovery material: losing it makes the encrypted secrets unrecoverable. Keep it outside the server. Metadata, permission rules, and audit records are not encrypted; secret values are. A privileged attacker controlling an unlocked process can access its in-memory data. Disable core dumps and use encrypted swap or disable swap on secret-bearing hosts. Go cannot guarantee removal of every transient copy of a secret from memory.
 

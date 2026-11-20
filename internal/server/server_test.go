@@ -402,7 +402,7 @@ func TestTLSOriginAndVisibleVersion(t *testing.T) {
 	}
 	b, _ := io.ReadAll(r.Body)
 	r.Body.Close()
-	if !bytes.Contains(b, []byte("SSM v1.0.0")) || !bytes.Contains(b, []byte("<header>")) {
+	if !bytes.Contains(b, []byte("SSM V1.0.1-LTS1")) || !bytes.Contains(b, []byte("<header>")) {
 		t.Fatal("persistent version missing")
 	}
 	req, _ = http.NewRequest("POST", f.http.URL+"/api/v1/login", strings.NewReader("{}"))

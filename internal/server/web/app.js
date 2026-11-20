@@ -15,7 +15,7 @@ async function api(path, method = 'GET', body) {
   if (!response.ok) { if (response.status === 401) signedOut(); throw new Error(data.error || 'Request failed'); }
   return data;
 }
-function signedOut(){authGeneration++;clearWorkflows();secretMetadata=[];currentFolder='';$('secret-list').replaceChildren();$('secret-editor').close();clearEditor();csrf='';$('dashboard').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('status').textContent='Authentication required';$('new-token').textContent='';$('revealed-value').textContent='';$('reveal').close();}
+function signedOut(){authGeneration++;resetPurge();clearWorkflows();secretMetadata=[];currentFolder='';$('secret-list').replaceChildren();$('secret-editor').close();clearEditor();csrf='';$('dashboard').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('status').textContent='Authentication required';$('new-token').textContent='';$('revealed-value').textContent='';$('reveal').close();}
 async function status(){const generation=authGeneration;const data=await api('admin/status');if(!csrf||generation!==authGeneration)return;$('status').textContent=data.locked?'● LOCKED':'● UNLOCKED';renderLockControls(data.locked);}
 async function signedIn(session){csrf=session.csrf;$('dashboard').hidden=false;$('login').hidden=true;$('logout').hidden=false;await refresh();}
 function action(label, fn){const b=document.createElement('button');b.textContent=label;b.onclick=()=>Promise.resolve().then(fn).catch(e=>message(e.message));return b;}
@@ -214,4 +214,28 @@ $('master-form').onsubmit=async event=>{
  try{await api('admin/master','POST',{old:fields.old.value,new:fields.new.value});if(generation===workflowGeneration){dialog.close();message('Master key changed. Use your new key for the next unlock.');}}
  catch(e){if(generation===workflowGeneration)$('master-error').textContent=e.message;}
  finally{$('master-form').reset();busy(dialog,false);}
+};
+
+// The first click reviews the requested retention. Only the second, explicit
+// confirmation makes a destructive request; cancel/Escape never contacts the API.
+let purgeDays=null,purgePending=false;
+function resetPurge(){purgeDays=null;purgePending=false;$('purge-dialog').close();$('purge-error').textContent='';$('confirm-purge').disabled=false;$('cancel-purge').disabled=false;}
+$('purge-form').onsubmit=event=>{
+ event.preventDefault();const value=$('purge-days').value,days=Number(value);
+ if(value===''||!Number.isInteger(days)||days<0||days>36500)return;
+ purgeDays=days;$('purge-error').textContent='';
+ $('purge-summary').textContent=days===0?'Permanently delete all dated audit history up to the time you confirm?':'Permanently delete audit records older than '+days+' day(s), keeping the most recent '+days+' day(s)?';
+ $('purge-dialog').showModal();$('cancel-purge').focus();
+};
+$('cancel-purge').onclick=()=>{if(!purgePending)resetPurge();};
+$('purge-dialog').addEventListener('cancel',event=>{if(purgePending)event.preventDefault();else purgeDays=null;});
+$('confirm-purge').onclick=async()=>{
+ if(purgePending||purgeDays===null)return;
+ const generation=authGeneration;purgePending=true;$('confirm-purge').disabled=true;$('cancel-purge').disabled=true;
+ try{
+  const result=await api('admin/audit/purge','POST',{days:purgeDays,confirm:true});
+  if(generation!==authGeneration)return;
+  resetPurge();$('purge-result').textContent='Purged '+result.deleted+' audit record(s). Retained events from '+new Date(result.cutoff).toLocaleString()+' onward, plus undated events.';
+ }catch(e){if(generation===authGeneration)$('purge-error').textContent=e.message;}
+ finally{if(generation===authGeneration){purgePending=false;$('confirm-purge').disabled=false;$('cancel-purge').disabled=false;}}
 };

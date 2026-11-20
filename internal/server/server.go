@@ -484,6 +484,14 @@ func (s *Server) route(t storage.Tx, r *http.Request, identity, path *string) (a
 				}
 				return ok(map[string]bool{"ok": true})
 			}
+		case "/api/v1/admin/audit/purge":
+			if r.Method == "POST" {
+				result, e := purgeAudit(t, r)
+				if e != nil {
+					return fail(e)
+				}
+				return ok(result)
+			}
 		case "/api/v1/admin/audit/download":
 			if r.Method == "GET" {
 				return ok(auditDownload{})
