@@ -19,17 +19,23 @@ import (
 )
 
 type Server struct {
-	Store      storage.Store
-	Vault      security.Vault
-	SessionTTL time.Duration
-	Log        *slog.Logger
-	mu         sync.Mutex
-	attempts   int
-	window     time.Time
+	Store       storage.Store
+	Vault       security.Vault
+	SessionTTL  time.Duration
+	Log         *slog.Logger
+	mu          sync.Mutex
+	attempts    int
+	window      time.Time
+	purgeCancel context.CancelFunc
+	purgeDone   chan struct{}
 }
 
 func New(st storage.Store, ttl time.Duration, log *slog.Logger) *Server {
-	return &Server{Store: st, SessionTTL: ttl, Log: log}
+	s := &Server{Store: st, SessionTTL: ttl, Log: log, purgeDone: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.purgeCancel = cancel
+	go s.runPurgeWorker(ctx)
+	return s
 }
 
 // Setup is an offline operation, never a publicly accessible initialization API.
@@ -486,11 +492,18 @@ func (s *Server) route(t storage.Tx, r *http.Request, identity, path *string) (a
 			}
 		case "/api/v1/admin/audit/purge":
 			if r.Method == "POST" {
-				result, e := purgeAudit(t, r)
+				result, e := queueAuditPurge(t, r, *identity)
 				if e != nil {
 					return fail(e)
 				}
-				return ok(result)
+				return result, http.StatusAccepted, nil, nil
+			}
+			if r.Method == "GET" {
+				job, e := readPurgeJob(t)
+				if e != nil {
+					return fail(e)
+				}
+				return ok(job)
 			}
 		case "/api/v1/admin/audit/download":
 			if r.Method == "GET" {

@@ -122,6 +122,7 @@ func run() error {
 	}
 	app := server.New(st, ttl, log)
 	defer app.Vault.Lock()
+	defer app.Close()
 	srv := &http.Server{ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn), Addr: c.Listen, Handler: app, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

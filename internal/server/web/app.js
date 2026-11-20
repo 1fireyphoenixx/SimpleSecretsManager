@@ -9,13 +9,13 @@ let editorGeneration = 0;
 let authGeneration = 0;
 const $ = id => document.getElementById(id);
 const message = text => { $('message').textContent = text; };
-async function api(path, method = 'GET', body) {
-  const response = await fetch('/api/v1/' + path, {method, credentials:'same-origin', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, body:body === undefined ? undefined : JSON.stringify(body)});
+async function api(path, method = 'GET', body, signal) {
+  const response = await fetch('/api/v1/' + path, {method, signal, credentials:'same-origin', headers:{'Content-Type':'application/json','X-CSRF-Token':csrf}, body:body === undefined ? undefined : JSON.stringify(body)});
   const data = await response.json();
   if (!response.ok) { if (response.status === 401) signedOut(); throw new Error(data.error || 'Request failed'); }
   return data;
 }
-function signedOut(){authGeneration++;resetPurge();clearWorkflows();secretMetadata=[];currentFolder='';$('secret-list').replaceChildren();$('secret-editor').close();clearEditor();csrf='';$('dashboard').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('status').textContent='Authentication required';$('new-token').textContent='';$('revealed-value').textContent='';$('reveal').close();}
+function signedOut(){authGeneration++;stopPurgePolling();resetPurge();clearWorkflows();secretMetadata=[];currentFolder='';$('secret-list').replaceChildren();$('secret-editor').close();clearEditor();csrf='';$('dashboard').hidden=true;$('login').hidden=false;$('logout').hidden=true;$('status').textContent='Authentication required';$('new-token').textContent='';$('revealed-value').textContent='';$('reveal').close();}
 async function status(){const generation=authGeneration;const data=await api('admin/status');if(!csrf||generation!==authGeneration)return;$('status').textContent=data.locked?'● LOCKED':'● UNLOCKED';renderLockControls(data.locked);}
 async function signedIn(session){csrf=session.csrf;$('dashboard').hidden=false;$('login').hidden=true;$('logout').hidden=false;await refresh();}
 function action(label, fn){const b=document.createElement('button');b.textContent=label;b.onclick=()=>Promise.resolve().then(fn).catch(e=>message(e.message));return b;}
@@ -33,6 +33,7 @@ async function refresh(){const generation=authGeneration;await status();const [s
  // Names and paths are untrusted server data; table() always inserts text.
  table('writer-list',['Name / ID','Paths','Creation','State','Actions'],writers.map(c=>[c.name+' / '+c.id,(c.paths||[]).join('\n'),c.allow_create?'Allowed':'Not allowed',c.revoked?'Revoked':'Active',c.revoked?[]:[action('Edit permissions',()=>openPermissions('writer',c)),action('Revoke',async()=>{if(confirm('Revoke '+c.name+'?')){await api('admin/write-credentials/'+c.id,'DELETE');await refresh();}})]]));
  table('admin-list',['Administrator','Actions'],admins.map(name=>[name,[action('Delete',async()=>{if(confirm('Delete administrator '+name+'?')){await api('admin/administrators/'+encodeURIComponent(name),'DELETE');await refresh();}})]]));
+ await refreshPurgeStatus();
 }
 function form(id, fn){$(id).onsubmit=async e=>{e.preventDefault();const data=Object.fromEntries(new FormData(e.target));try{await fn(data);e.target.reset();message('Saved.');}catch(e){message(e.message);}finally{e.target.querySelectorAll('input[type=password],textarea[name=value]').forEach(x=>x.value='');}};}
 form('login-form',async d=>signedIn(await api('login','POST',d)));
@@ -44,7 +45,7 @@ $('lock').onclick=async()=>{try{await api('admin/lock','POST',{});await status()
 $('hide-token').onclick=()=>{$('new-token').textContent='';};
 $('close-reveal').onclick=()=>{$('revealed-value').textContent='';$('reveal').close();};
 $('reveal').addEventListener('close',()=>{$('revealed-value').textContent='';});
-document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(s=>s.hidden=s.id!==b.dataset.tab);$('new-token').textContent='';});
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(s=>s.hidden=s.id!==b.dataset.tab);if(b.dataset.tab==='server')refreshPurgeStatus();$('new-token').textContent='';});
 setInterval(()=>{if(csrf)status().catch(e=>message(e.message));},15000);
 api('admin/session').then(signedIn).catch(()=>signedOut());
 
@@ -216,15 +217,41 @@ $('master-form').onsubmit=async event=>{
  finally{$('master-form').reset();busy(dialog,false);}
 };
 
-// The first click reviews the requested retention. Only the second, explicit
-// confirmation makes a destructive request; cancel/Escape never contacts the API.
-let purgeDays=null,purgePending=false;
+// Purging is a durable background job. This page only queues it and polls a
+// small status document; it never fetches audit records to perform the deletion.
+let purgeDays=null,purgePending=false,purgeRunning=false,purgeTimer=null,purgeStatusLoading=false,purgeStatusAgain=false;
+function stopPurgePolling(){clearTimeout(purgeTimer);purgeRunning=false;}
 function resetPurge(){purgeDays=null;purgePending=false;$('purge-dialog').close();$('purge-error').textContent='';$('confirm-purge').disabled=false;$('cancel-purge').disabled=false;}
+function showPurgeJob(job){
+ purgeRunning=job.state==='queued'||job.state==='running';
+ $('purge-form').querySelector('button').disabled=purgeRunning;
+ if(job.state==='idle'){$('purge-result').textContent='';return;}
+ const progress='Scanned '+job.scanned+' · deleted '+job.deleted+' · skipped '+job.skipped+'.';
+ $('purge-result').textContent=job.state==='failed'?'Purge failed. '+progress+' '+job.error:
+  job.state==='completed'?'Purge completed. '+progress+' Skipped events were undated, malformed, or oversized.':
+  'Purge '+job.state+'. '+progress+' You can close this page; the server will continue.';
+}
+async function refreshPurgeStatus(){
+ if(!csrf)return;
+ if(purgeStatusLoading){purgeStatusAgain=true;return;}
+ clearTimeout(purgeTimer);const generation=authGeneration;purgeStatusLoading=true;
+ try{const job=await api('admin/audit/purge','GET',undefined,AbortSignal.timeout(15000));if(generation===authGeneration)showPurgeJob(job);}
+ catch(e){if(generation===authGeneration&&csrf){purgeRunning=true;$('purge-form').querySelector('button').disabled=true;$('purge-result').textContent='Cannot retrieve purge progress. Retrying; any queued job continues on the server.';}}
+ finally{
+  purgeStatusLoading=false;
+  // A confirmation or fresh login may have requested status while this fetch
+  // was in flight. Always honor that refresh, even if this response was idle.
+  if(csrf&&(purgeStatusAgain||(generation===authGeneration&&purgeRunning))){
+   const delay=purgeStatusAgain?0:2000;purgeStatusAgain=false;purgeTimer=setTimeout(refreshPurgeStatus,delay);
+  }
+ }
+}
 $('purge-form').onsubmit=event=>{
- event.preventDefault();const value=$('purge-days').value,days=Number(value);
+ event.preventDefault();if(purgeRunning)return;
+ const value=$('purge-days').value,days=Number(value);
  if(value===''||!Number.isInteger(days)||days<0||days>36500)return;
  purgeDays=days;$('purge-error').textContent='';
- $('purge-summary').textContent=days===0?'Permanently delete all dated audit history up to the time you confirm?':'Permanently delete audit records older than '+days+' day(s), keeping the most recent '+days+' day(s)?';
+ $('purge-summary').textContent=days===0?'Queue deletion of all dated audit history up to the time you confirm?':'Queue deletion of audit records older than '+days+' day(s), keeping the most recent '+days+' day(s)?';
  $('purge-dialog').showModal();$('cancel-purge').focus();
 };
 $('cancel-purge').onclick=()=>{if(!purgePending)resetPurge();};
@@ -233,9 +260,9 @@ $('confirm-purge').onclick=async()=>{
  if(purgePending||purgeDays===null)return;
  const generation=authGeneration;purgePending=true;$('confirm-purge').disabled=true;$('cancel-purge').disabled=true;
  try{
-  const result=await api('admin/audit/purge','POST',{days:purgeDays,confirm:true});
+  const job=await api('admin/audit/purge','POST',{days:purgeDays,confirm:true},AbortSignal.timeout(15000));
   if(generation!==authGeneration)return;
-  resetPurge();$('purge-result').textContent='Purged '+result.deleted+' audit record(s). Retained events from '+new Date(result.cutoff).toLocaleString()+' onward, plus undated events.';
- }catch(e){if(generation===authGeneration)$('purge-error').textContent=e.message;}
+  resetPurge();showPurgeJob(job);await refreshPurgeStatus();
+ }catch(e){if(generation===authGeneration){$('purge-error').textContent=e.message+' Check the progress below before retrying.';refreshPurgeStatus();}}
  finally{if(generation===authGeneration){purgePending=false;$('confirm-purge').disabled=false;$('cancel-purge').disabled=false;}}
 };

@@ -30,6 +30,7 @@ func TestCLIUnlock(t *testing.T) {
 		t.Fatal(e)
 	}
 	app := server.New(st, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer app.Close()
 	http := httptest.NewTLSServer(app)
 	defer http.Close()
 	ca := filepath.Join(dir, "ca.crt")

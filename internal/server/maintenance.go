@@ -80,28 +80,3 @@ func (s *Server) downloadAudit(w http.ResponseWriter, r *http.Request) {
 		panic(http.ErrAbortHandler)
 	}
 }
-
-// purgeAudit requires explicit confirmation even for non-browser clients. A day
-// is a rolling 24-hour interval in UTC. Zero keeps no historical dated events;
-// the normal request audit is appended afterwards, preserving who ran the purge.
-func purgeAudit(t storage.Tx, r *http.Request) (any, error) {
-	var in struct {
-		Days    *int `json:"days"`
-		Confirm bool `json:"confirm"`
-	}
-	if err := decode(r, &in); err != nil {
-		return nil, err
-	}
-	if in.Days == nil || *in.Days < 0 || *in.Days > 36500 {
-		return nil, bad("days must be a whole number from 0 to 36500")
-	}
-	if !in.Confirm {
-		return nil, bad("explicit purge confirmation is required")
-	}
-	cutoff := time.Now().UTC().Add(-time.Duration(*in.Days) * 24 * time.Hour)
-	deleted, err := t.PurgeAuditBefore(cutoff)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"deleted": deleted, "days_kept": *in.Days, "cutoff": cutoff}, nil
-}

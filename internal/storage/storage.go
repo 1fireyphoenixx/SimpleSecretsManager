@@ -24,7 +24,8 @@ type Tx interface {
 	Put(kind, id string, value any) error
 	Delete(kind, id string) error
 	List(kind string) ([]json.RawMessage, error)
-	PurgeAuditBefore(time.Time) (int64, error)
+	AuditUpperID() (string, error)
+	PurgeAuditBatch(time.Time, string, string) (PurgeBatch, error)
 }
 type Store interface {
 	Update(context.Context, func(Tx) error) error
@@ -34,7 +35,10 @@ type Store interface {
 	Scan(context.Context, string, func(json.RawMessage) error) error
 }
 type SQLStore struct{ db *sql.DB }
-type sqlTx struct{ tx *sql.Tx }
+type sqlTx struct {
+	tx  *sql.Tx
+	ctx context.Context
+}
 
 // Open applies migrations before accepting traffic. One connection keeps SQLite
 // write ordering predictable; the DB mutex row also serializes MySQL processes.
@@ -125,7 +129,7 @@ func (s *SQLStore) Update(ctx context.Context, fn func(Tx) error) error {
 	if _, e = tx.ExecContext(ctx, "UPDATE ssm_mutex SET counter=counter WHERE id=1"); e != nil {
 		return e
 	}
-	if e = fn(&sqlTx{tx}); e != nil {
+	if e = fn(&sqlTx{tx: tx, ctx: ctx}); e != nil {
 		return e
 	}
 	return tx.Commit()
@@ -223,66 +227,79 @@ func (s *SQLStore) Scan(ctx context.Context, kind string, visit func(json.RawMes
 	return nil
 }
 
-// PurgeAuditBefore only deletes audit records. The records table also contains
-// secrets and the wrapped encryption key, so TRUNCATE must never be used here.
-// Read small batches, close their cursor, then delete expired IDs in the same
-// transaction. Parse the stored event timestamp rather than comparing ID text:
-// RFC3339 offsets and fractional seconds do not always sort chronologically.
-func (t *sqlTx) PurgeAuditBefore(cutoff time.Time) (int64, error) {
-	var deleted int64
-	after := ""
-	for {
-		rows, err := t.tx.Query("SELECT id,document FROM records WHERE kind='audit' AND id>? ORDER BY id LIMIT 256", after)
-		if err != nil {
-			return 0, err
+// PurgeBatch is a small cursor/progress result, never a collection of events.
+// Each call must run in its own transaction so other requests can use the DB.
+type PurgeBatch struct {
+	LastID                    string
+	Scanned, Deleted, Skipped int64
+	Done                      bool
+}
+
+const PurgeBatchSize = 128
+const MaxPurgeEventBytes = 64 * 1024
+
+func (t *sqlTx) AuditUpperID() (string, error) {
+	var upper string
+	err := t.tx.QueryRowContext(t.ctx, "SELECT COALESCE(MAX(id),'') FROM records WHERE kind='audit'").Scan(&upper)
+	return upper, err
+}
+
+// PurgeAuditBatch examines at most 128 events. SQL excludes oversized payloads
+// BEFORE sending them to Go; even a malicious multi-gigabyte record cannot be
+// loaded into application memory. Such events, malformed timestamps, and undated
+// legacy events are retained and counted as skipped, never guessed at/deleted.
+// The fixed upper ID prevents a busy audit stream from extending the job forever.
+func (t *sqlTx) PurgeAuditBatch(cutoff time.Time, after, upper string) (PurgeBatch, error) {
+	out := PurgeBatch{LastID: after}
+	if after >= upper {
+		out.Done = true
+		return out, nil
+	}
+	rows, err := t.tx.QueryContext(t.ctx, "SELECT id, CASE WHEN LENGTH(document)<=? THEN document ELSE NULL END FROM records WHERE kind='audit' AND id>? AND id<=? ORDER BY id LIMIT ?", MaxPurgeEventBytes, after, upper, PurgeBatchSize)
+	if err != nil {
+		return out, err
+	}
+	ids := make([]string, 0, PurgeBatchSize)
+	for rows.Next() {
+		var id string
+		var document []byte
+		if err = rows.Scan(&id, &document); err != nil {
+			rows.Close()
+			return PurgeBatch{}, err
 		}
-		ids := make([]string, 0, 256)
-		count := 0
-		for rows.Next() {
-			var id string
-			var document []byte
-			if err = rows.Scan(&id, &document); err != nil {
-				rows.Close()
-				return 0, err
-			}
-			var event struct {
-				Timestamp time.Time `json:"timestamp"`
-			}
-			if err = json.Unmarshal(document, &event); err != nil {
-				rows.Close()
-				return 0, fmt.Errorf("invalid audit timestamp: %w", err)
-			}
-			// Undated legacy records are retained: their age cannot be determined.
-			if !event.Timestamp.IsZero() && event.Timestamp.Before(cutoff) {
-				ids = append(ids, id)
-			}
-			after = id
-			count++
+		out.LastID = id
+		out.Scanned++
+		var event struct {
+			Timestamp time.Time `json:"timestamp"`
 		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return 0, err
+		if len(document) == 0 || json.Unmarshal(document, &event) != nil || event.Timestamp.IsZero() {
+			out.Skipped++
+			continue
 		}
-		if len(ids) > 0 {
-			// One bounded DELETE per page avoids a round trip per audit event.
-			args := make([]any, len(ids))
-			for i, id := range ids {
-				args[i] = id
-			}
-			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-			result, err := t.tx.Exec("DELETE FROM records WHERE kind='audit' AND id IN ("+placeholders+")", args...)
-			if err != nil {
-				return 0, err
-			}
-			n, err := result.RowsAffected()
-			if err != nil {
-				return 0, err
-			}
-			deleted += n
-		}
-		if count < 256 {
-			return deleted, nil
+		if event.Timestamp.Before(cutoff) {
+			ids = append(ids, id)
 		}
 	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return PurgeBatch{}, err
+	}
+	if len(ids) > 0 {
+		args := make([]any, len(ids))
+		for i, id := range ids {
+			args[i] = id
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+		result, err := t.tx.ExecContext(t.ctx, "DELETE FROM records WHERE kind='audit' AND id IN ("+placeholders+")", args...)
+		if err != nil {
+			return PurgeBatch{}, err
+		}
+		out.Deleted, err = result.RowsAffected()
+		if err != nil {
+			return PurgeBatch{}, err
+		}
+	}
+	out.Done = out.Scanned < PurgeBatchSize || out.LastID >= upper
+	return out, nil
 }

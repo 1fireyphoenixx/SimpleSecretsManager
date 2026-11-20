@@ -13,7 +13,7 @@ SSM provides the everyday workflow of storing encrypted secrets centrally and de
 - Store records in SQLite or MySQL with tracked, automatic schema migrations.
 - Deploy raw values or Go-template output through atomic, symlink-resistant file replacement. Poll metadata first, persist applied revisions, and retry outages and local hooks.
 - Authenticate administrators using expiring secure-cookie sessions and CSRF protection. Authenticate agents and Kubernetes using independent bearer credentials over verified TLS.
-- Record audit events without secret values or plaintext credentials; download a streamed `.txt` audit export and purge older audit records with a confirmed days-to-keep policy from the WebUI. Expose liveness and readiness while locked.
+- Record audit events without secret values or plaintext credentials; download a streamed `.txt` audit export and purge older audit records in bounded background batches with a confirmed days-to-keep policy and live progress in the WebUI. Expose liveness and readiness while locked.
 
 Start with **[setup.md](setup.md)** for a complete installation, certificate setup, enrollment, unlock, backup, and Kubernetes walkthrough. Copy-ready units and configuration examples are in [examples](examples).
 

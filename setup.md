@@ -394,7 +394,8 @@ All JSON endpoints begin with `/api/v1/`. Successful operations currently return
 | DELETE | `/admin/enrollment/<id>` | Administrator; delete enrollment token |
 | GET / POST | `/admin/administrators` | Administrator; list names or create/change `{name,password}` |
 | DELETE | `/admin/administrators/<name>` | Administrator; delete another administrator |
-| POST | `/admin/audit/purge` | Administrator + CSRF; `{days:30,confirm:true}`, removes older audit records only |
+| GET | `/admin/audit/purge` | Administrator; latest purge job state and progress counters |
+| POST | `/admin/audit/purge` | Administrator + CSRF; `{days:30,confirm:true}`, queues background purge (202 Accepted) |
 | GET | `/admin/audit/download` | Administrator; streamed `.txt` attachment, one JSON audit event per line |
 | GET | `/admin/audit` | Administrator; legacy JSON audit records |
 
@@ -434,13 +435,25 @@ number of days to keep. Choose **Purge…**, review the retention period, then c
 **Confirm purge**. Cancel or Escape leaves the database unchanged. Days are rolling
 24-hour periods, and the cutoff is calculated in UTC at confirmation time. Use
 0 to remove all dated audit history up to that point; the purge operation itself
-is recorded afterwards. The response reports the number deleted and the cutoff.
+is recorded afterwards. The server immediately returns **202 Accepted** with a
+queued job. The browser polls progress without downloading audit records. You can
+close the page; processing continues. Reopening the page restores progress, and
+restarting the server resumes the saved job. Only one purge can run at a time
+(a second request receives 409).
 
 Only `kind = audit` rows in the shared `records` table are eligible. Secrets,
 encryption keys, administrators, sessions, agents, and tokens are preserved.
 This is a selective deletion, not SQL `TRUNCATE`. Events at the cutoff or newer
 are kept; undated legacy events are retained because their age is unknown.
-Malformed timestamps abort and roll back the operation rather than guessing.
+Malformed events and events larger than 64 KiB are also retained and counted as
+skipped. Each transaction examines at most 128 records, with oversized payloads
+excluded by SQL before they reach Go. Indexed cursor pagination avoids loading
+the entire table or repeatedly scanning already processed rows. Each batch commits
+its deletions and progress together, then releases the database for other requests.
+A database failure rolls back only that batch; earlier deletions remain committed.
+The status reports failure and partial counts so an administrator can retry.
+The fixed upper record ID bounds the scan; new events are not a moving target.
+Progress reports scanned/deleted/skipped counts without an expensive total count.
 The feature works while locked and requires administrator authentication and CSRF
 protection. Download a copy beforehand if you need an archive. Deletion frees
 space for database reuse but does not necessarily shrink the on-disk database.

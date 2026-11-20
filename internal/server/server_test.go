@@ -49,6 +49,7 @@ func newFixture(t *testing.T, driver, dsn string) *fixture {
 	}
 	f := &fixture{t: t}
 	f.app = New(st, time.Hour, slog.New(slog.NewJSONHandler(&f.logs, nil)))
+	t.Cleanup(f.app.Close)
 	f.http = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v1/secrets/") {
 			f.reads.Add(1)
@@ -207,7 +208,9 @@ func lifecycle(t *testing.T, driver, dsn string) {
 	if recreated["revision"].(float64) != 3 {
 		t.Fatal("recreated secret reused revision")
 	}
-	if !New(f.app.Store, time.Hour, slog.Default()).Vault.Locked() {
+	restarted := New(f.app.Store, time.Hour, slog.Default())
+	restarted.Close()
+	if !restarted.Vault.Locked() {
 		t.Fatal("restarted server unlocked")
 	}
 	// Database and structured audit/log output must not contain source values or

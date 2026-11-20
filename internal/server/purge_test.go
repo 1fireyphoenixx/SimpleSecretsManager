@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,13 +70,40 @@ func auditRetention(t *testing.T, driver, dsn string) {
 		}
 		return nil
 	}))
+
+	// Oversized and malformed events must never enter the parser or abort a job.
 	must(f.app.Store.Update(ctx, func(tx storage.Tx) error {
-		n, err := tx.PurgeAuditBefore(cutoff)
-		if n != 601 {
-			t.Errorf("deleted %d, want 601", n)
+		if err := tx.Put("audit", "oversized", map[string]any{"timestamp": cutoff.Add(-time.Hour), "padding": strings.Repeat("x", 2*1024*1024)}); err != nil {
+			return err
 		}
-		return err
+		return tx.Put("audit", "malformed", map[string]string{"timestamp": "invalid"})
 	}))
+	var upper, cursor string
+	must(f.app.Store.Update(ctx, func(tx storage.Tx) error { var err error; upper, err = tx.AuditUpperID(); return err }))
+	var deleted, skipped int64
+	batches := 0
+	for {
+		var batch storage.PurgeBatch
+		must(f.app.Store.Update(ctx, func(tx storage.Tx) error {
+			var err error
+			batch, err = tx.PurgeAuditBatch(cutoff, cursor, upper)
+			return err
+		}))
+		if batch.Scanned > storage.PurgeBatchSize {
+			t.Fatal("unbounded batch")
+		}
+		deleted += batch.Deleted
+		skipped += batch.Skipped
+		batches++
+		cursor = batch.LastID
+		if batch.Done {
+			break
+		}
+	}
+	if deleted != 601 || skipped != 3 || batches < 5 {
+		t.Fatalf("deleted=%d skipped=%d batches=%d", deleted, skipped, batches)
+	}
+
 	must(f.app.Store.Update(ctx, func(tx storage.Tx) error {
 		for _, id := range []string{"equal", "newer", "unknown"} {
 			var a Audit
@@ -92,24 +120,11 @@ func auditRetention(t *testing.T, driver, dsn string) {
 				t.Fatal("non-audit data changed")
 			}
 		}
-		// An invalid event in a later batch must roll back earlier deletions.
-		for i := 0; i < 300; i++ {
-			if err := tx.Put("audit", fmt.Sprintf("rollback-%04d", i), Audit{Time: cutoff.Add(-time.Hour)}); err != nil {
-				return err
-			}
-		}
-		return tx.Put("audit", "z-malformed", map[string]string{"timestamp": "not a date"})
+		return nil
 	}))
-	if err := f.app.Store.Update(ctx, func(tx storage.Tx) error { _, err := tx.PurgeAuditBefore(cutoff); return err }); err == nil {
-		t.Fatal("malformed timestamp accepted")
-	}
-	must(f.app.Store.Update(ctx, func(tx storage.Tx) error {
-		var a Audit
-		if err := tx.Get("audit", "rollback-0000", &a); err != nil {
-			return err
-		}
-		return tx.Delete("audit", "z-malformed")
-	}))
+	// Stop the worker to prove queueing and status do not require processing any
+	// audit rows. A fresh server below resumes this durable job.
+	f.app.Close()
 	// The API is authenticated, CSRF-protected, and requires explicit confirmation.
 	f.request("admin/audit/purge", "POST", map[string]any{"days": 30, "confirm": true}, "", 401)
 	f.login()
@@ -120,7 +135,7 @@ func auditRetention(t *testing.T, driver, dsn string) {
 	for _, body := range []map[string]any{{"days": 30}, {"days": 30, "confirm": false}, {"confirm": true}, {"days": -1, "confirm": true}, {"days": 36501, "confirm": true}, {"days": 1.5, "confirm": true}, {"days": "30", "confirm": true}} {
 		f.request("admin/audit/purge", "POST", body, "", 400)
 	}
-	f.request("admin/audit/purge", "GET", nil, "", 405)
+	f.request("admin/audit/purge", "GET", nil, "", 200)
 	must(f.app.Store.Update(ctx, func(tx storage.Tx) error {
 		if err := tx.Put("audit", "api-old", Audit{Time: time.Now().Add(-31 * 24 * time.Hour)}); err != nil {
 			return err
@@ -128,7 +143,20 @@ func auditRetention(t *testing.T, driver, dsn string) {
 		return tx.Put("audit", "api-recent", Audit{Time: time.Now().Add(-time.Hour)})
 	}))
 	// Locked operation is intentional: audit data needs no secret decryption key.
-	f.request("admin/audit/purge", "POST", map[string]any{"days": 30, "confirm": true}, "", 200)
+
+	queued := f.request("admin/audit/purge", "POST", map[string]any{"days": 30, "confirm": true}, "", 202)
+	if queued["state"] != "queued" || queued["scanned"] != float64(0) {
+		t.Fatal("POST performed synchronous scan")
+	}
+	f.request("admin/audit/purge", "POST", map[string]any{"days": 30, "confirm": true}, "", 409)
+	status := f.request("admin/audit/purge", "GET", nil, "", 200)
+	if status["id"] != queued["id"] || status["state"] != "queued" {
+		t.Fatal("job not durable")
+	}
+	resumed := New(f.app.Store, time.Hour, f.app.Log)
+	defer resumed.Close()
+	waitPurge(t, f)
+
 	must(f.app.Store.Update(ctx, func(tx storage.Tx) error {
 		var a Audit
 		if err := tx.Get("audit", "api-old", &a); !errors.Is(err, storage.ErrNotFound) {
@@ -136,7 +164,8 @@ func auditRetention(t *testing.T, driver, dsn string) {
 		}
 		return tx.Get("audit", "api-recent", &a)
 	}))
-	result := f.request("admin/audit/purge", "POST", map[string]any{"days": 0, "confirm": true}, "", 200)
+	f.request("admin/audit/purge", "POST", map[string]any{"days": 0, "confirm": true}, "", 202)
+	result := waitPurge(t, f)
 	if result["days_kept"] != float64(0) || result["deleted"].(float64) == 0 {
 		t.Fatal("invalid purge result")
 	}
@@ -149,7 +178,7 @@ func auditRetention(t *testing.T, driver, dsn string) {
 		for _, row := range rows {
 			var a Audit
 			if err = json.Unmarshal(row, &a); err != nil {
-				return err
+				continue
 			}
 			if a.Operation == "POST /api/v1/admin/audit/purge" && a.Identity == "admin:admin" && a.Success {
 				found = true
@@ -162,4 +191,134 @@ func auditRetention(t *testing.T, driver, dsn string) {
 	}))
 	// Authentication and the wrapped key survive even an all-history purge.
 	f.unlock()
+}
+
+// Poll only the small job document, just as the browser does.
+func waitPurge(t *testing.T, f *fixture) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		result := f.request("admin/audit/purge", "GET", nil, "", 200)
+		if result["state"] == "completed" {
+			return result
+		}
+		if result["state"] == "failed" {
+			t.Fatalf("purge failed: %v", result)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("purge did not complete")
+	return nil
+}
+
+// Interrupt the second transaction after it has deleted rows but before commit.
+// This models shutdown/database failure and checks both data and durable counters.
+type interruptedPurgeStore struct {
+	storage.Store
+	entered  chan struct{}
+	batches  int
+	shutdown bool
+}
+type interruptedPurgeTx struct {
+	storage.Tx
+	owner *interruptedPurgeStore
+	ctx   context.Context
+}
+
+func (s *interruptedPurgeStore) Update(ctx context.Context, fn func(storage.Tx) error) error {
+	return s.Store.Update(ctx, func(tx storage.Tx) error { return fn(&interruptedPurgeTx{Tx: tx, owner: s, ctx: ctx}) })
+}
+func (t *interruptedPurgeTx) PurgeAuditBatch(cutoff time.Time, after, upper string) (storage.PurgeBatch, error) {
+	batch, err := t.Tx.PurgeAuditBatch(cutoff, after, upper)
+	if err != nil {
+		return batch, err
+	}
+	t.owner.batches++
+	if t.owner.batches == 2 {
+		close(t.owner.entered)
+		if t.owner.shutdown {
+			<-t.ctx.Done()
+			return batch, t.ctx.Err()
+		}
+		return batch, errors.New("injected batch failure")
+	}
+	return batch, nil
+}
+func TestPurgePartialProgress(t *testing.T) {
+	for _, shutdown := range []bool{true, false} {
+		t.Run(fmt.Sprintf("shutdown=%v", shutdown), func(t *testing.T) {
+			f := newFixture(t, "sqlite", filepath.Join(t.TempDir(), "progress.db"))
+			f.app.Close()
+			ctx := context.Background()
+			err := f.app.Store.Update(ctx, func(tx storage.Tx) error {
+				for i := 0; i < 700; i++ {
+					if err := tx.Put("audit", fmt.Sprintf("event-%04d", i), Audit{Time: time.Now().Add(-48 * time.Hour)}); err != nil {
+						return err
+					}
+				}
+				return tx.Put("maintenance", "audit-purge", PurgeJob{ID: "test", State: "queued", Cutoff: time.Now(), Upper: "event-0699", Actor: "admin:test"})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wrapped := &interruptedPurgeStore{Store: f.app.Store, entered: make(chan struct{}), shutdown: shutdown}
+			worker := New(wrapped, time.Hour, f.app.Log)
+			defer worker.Close()
+			select {
+			case <-wrapped.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("worker did not reach second batch")
+			}
+			if shutdown {
+				worker.Close()
+			} else {
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					var job PurgeJob
+					if err := f.app.Store.Update(ctx, func(tx storage.Tx) error { var err error; job, err = readPurgeJob(tx); return err }); err != nil {
+						t.Fatal(err)
+					}
+					if job.State == "failed" {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("failure not persisted")
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				worker.Close()
+			}
+			err = f.app.Store.Update(ctx, func(tx storage.Tx) error {
+				job, err := readPurgeJob(tx)
+				if err != nil {
+					return err
+				}
+				if job.Deleted != 128 || job.Scanned != 128 || job.Cursor != "event-0127" {
+					t.Fatalf("uncommitted progress persisted: %+v", job)
+				}
+				var a Audit
+				if err := tx.Get("audit", "event-0000", &a); !errors.Is(err, storage.ErrNotFound) {
+					t.Fatal("first batch not committed")
+				}
+				if err := tx.Get("audit", "event-0128", &a); err != nil {
+					return err
+				}
+				if !shutdown {
+					job.State = "queued"
+					return tx.Put("maintenance", "audit-purge", job)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumed := New(f.app.Store, time.Hour, f.app.Log)
+			defer resumed.Close()
+			f.login()
+			result := waitPurge(t, f)
+			if result["deleted"] != float64(700) || result["scanned"] != float64(700) {
+				t.Fatalf("resume lost/doubled progress: %v", result)
+			}
+		})
+	}
 }
